@@ -133,6 +133,11 @@ export class MemoryDatabase {
     return memdb;
   }
 
+  /** Expose raw DB for advanced queries (AutoLinker, etc.) */
+  getRawDb() {
+    return this.db;
+  }
+
   /** Create a fresh database (for testing) */
   static create(dbPath: string): MemoryDatabase {
     const dir = path.dirname(dbPath);
