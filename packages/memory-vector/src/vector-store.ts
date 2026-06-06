@@ -22,6 +22,8 @@ export interface VectorMetadata {
   importance: number;
   createdAt: number;
   source: string;
+  tenantId?: string;    // 租户隔离（Phase 4）
+  tier?: "hot" | "cold"; // 存储层级
 }
 
 export interface VectorEntry {
@@ -37,6 +39,8 @@ export interface VectorQueryOptions {
     importanceMin?: number;
     sources?: string[];
     timeRange?: [number, number];
+    tenantId?: string;          // 租户隔离
+    tiers?: ("hot" | "cold")[]; // 存储层级过滤
   };
   scoreThreshold?: number;
 }
@@ -201,6 +205,15 @@ export class SqliteVectorStore {
         conditions.push("json_extract(metadata_json, '$.createdAt') >= ? AND json_extract(metadata_json, '$.createdAt') <= ?");
         params.push(f.timeRange[0], f.timeRange[1]);
       }
+      if (f.tenantId) {
+        conditions.push("json_extract(metadata_json, '$.tenantId') = ?");
+        params.push(f.tenantId);
+      }
+      if (f.tiers?.length) {
+        const placeholders = f.tiers.map(() => "?").join(",");
+        conditions.push(`json_extract(metadata_json, '$.tier') IN (${placeholders})`);
+        params.push(...f.tiers);
+      }
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -246,6 +259,60 @@ export class SqliteVectorStore {
   /** Delete all vectors and rebuild from scratch */
   clear(): void {
     this.db.exec("DELETE FROM vectors");
+  }
+
+  // ===== Cold Storage =====
+
+  /** Move entries to cold tier (update metadata) */
+  moveToCold(nodeIds: string[]): number {
+    let count = 0;
+    const stmt = this.db.prepare(
+      `UPDATE vectors SET metadata_json = json_set(metadata_json, '$.tier', 'cold') WHERE id = ?`,
+    );
+    for (const id of nodeIds) {
+      const r = stmt.run(id);
+      count += r.changes;
+    }
+    return count;
+  }
+
+  /** Move entries back to hot tier */
+  moveToHot(nodeIds: string[]): number {
+    let count = 0;
+    const stmt = this.db.prepare(
+      `UPDATE vectors SET metadata_json = json_set(metadata_json, '$.tier', 'hot') WHERE id = ?`,
+    );
+    for (const id of nodeIds) {
+      const r = stmt.run(id);
+      count += r.changes;
+    }
+    return count;
+  }
+
+  /** Auto-archive: entries older than N days with low importance become cold */
+  autoTier(daysOld: number, importanceThreshold: number): { movedToCold: number } {
+    const cutoff = Date.now() - daysOld * 86400000;
+    const rows = this.db
+      .prepare(`
+        SELECT id FROM vectors
+        WHERE json_extract(metadata_json, '$.tier') IS NULL
+          AND json_extract(metadata_json, '$.createdAt') < ?
+          AND json_extract(metadata_json, '$.importance') < ?
+      `)
+      .all(cutoff, importanceThreshold) as Array<{ id: string }>;
+
+    const ids = rows.map((r) => r.id);
+    if (ids.length === 0) return { movedToCold: 0 };
+
+    return { movedToCold: this.moveToCold(ids) };
+  }
+
+  /** Delete all cold entries */
+  purgeCold(): number {
+    const result = this.db
+      .prepare(`DELETE FROM vectors WHERE json_extract(metadata_json, '$.tier') = 'cold'`)
+      .run();
+    return result.changes;
   }
 
   close(): void {

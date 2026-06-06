@@ -5,6 +5,7 @@
  */
 
 export { SqliteVectorStore } from "./vector-store";
+export { IVFIndex } from "./ivf-index";
 export { LocalEmbedder, ApiEmbedder } from "./embedder";
 export type { Embedder } from "./embedder";
 export type {
