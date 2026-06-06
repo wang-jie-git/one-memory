@@ -1,0 +1,24 @@
+{
+  "name": "@one/memory-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One Memory MCP server — AI 工具接口",
+  "type": "module",
+  "main": "build/index.js",
+  "bin": {
+    "one-memory-mcp": "build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@one/memory-orchestrator": "link:../memory-orchestrator"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "tsx": "^4.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
