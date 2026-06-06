@@ -15,32 +15,34 @@
 
 ---
 
-## Phase 1 — 核心引擎 MVP（目标：v0.1）
+## Phase 1 — 核心引擎 MVP（v0.1）✅ 2026-06-06 完成
 
-### 1.1 memory-graph 包
+### 1.1 memory-graph 包 ✅
 
-- [ ] CodeGraph `MemoryEntry` 节点类型注册
-- [ ] 基础 CRUD: createMemoryEntry / getMemoryEntry / updateMemoryEntry / deleteMemoryEntry
-- [ ] `LinksToCode` 边关系创建（手动关联）
-- [ ] `LinksToMemory` 边关系创建（时序 + 因果）
-- [ ] Obsidian 双写同步（MemoryEntry → Markdown 文件）
-- [ ] 基础查询: `getRelatedMemories(nodeId, depth=2)` 图遍历
+- [x] CodeGraph `MemoryEntry` 节点类型注册
+- [x] 基础 CRUD: createMemoryEntry / getMemoryEntry / updateMemoryEntry / deleteMemoryEntry
+- [x] `LinksToCode` 边关系创建（手动关联）
+- [x] `LinksToMemory` 边关系创建（时序 + 因果）
+- [x] Obsidian 双写同步（MemoryEntry → Markdown 文件）
+- [x] 基础查询: `getRelatedMemories(nodeId, depth=2)` 图遍历
 
 **验证指标**: 可以从 One 写入一条记忆，同步到 Obsidian，通过图遍历查询关联的代码符号
 
-### 1.2 memory-vector 包
+### 1.2 memory-vector 包 ✅
 
-- [ ] `VectorStore` 抽象接口定义
-- [ ] SQLite + sqlite-vec 实现
-- [ ] Embedding 模型接入（支持 HuggingFace / OpenAI / 本地模型）
-- [ ] 向量 upsert + query
+- [x] `VectorStore` 抽象接口定义
+- [x] SQLite + BLOB 暴力搜索实现
+- [x] Embedding 模型接入（LocalEmbedder / ApiEmbedder）
+- [x] 向量 upsert + query
+- [x] Metadata 过滤（type/importance/source/timeRange）
 
 **验证指标**: 写入 100 条记忆后，语义搜索能在 TOP 5 中找到正确结果
 
-### 1.3 memory-orchestrator 包
+### 1.3 memory-orchestrator 包 ✅
 
-- [ ] `HybridQuery` 查询流程实现（向量粗召回 → 图精排序 → 融合打分）
-- [ ] 打分参数可配置（α, β, γ）
+- [x] `HybridQuery` 查询流程实现（向量粗召回 → 图精排序 → 融合打分）
+- [x] 打分参数可配置（α, β, γ）
+- [x] 降级回退（向量不可用 → 纯文本搜索）
 
 **验证指标**: 混合查询比纯向量检索的 MAP@5 提升 20%+
 
