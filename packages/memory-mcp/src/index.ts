@@ -28,7 +28,7 @@ import { HANDLERS, getToolSchemas, type ToolSchema } from "./tools.ts";
 function parseArgs(): { codegraphDir: string; embedder: string } {
   const args = process.argv.slice(2);
   let codegraphDir = "";
-  let embedder = "local";
+  let embedder = "simple"; // 默认用轻量内置 embedder，零模型下载
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--codegraph-dir" && i + 1 < args.length) {

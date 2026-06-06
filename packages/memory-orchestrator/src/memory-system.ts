@@ -14,8 +14,8 @@
 import { MemoryDatabase, type MemoryNode, type MemoryNodeType, type MemoryStatus, type MemorySource } from "../../memory-graph/src/database";
 import { ObsidianWriter } from "../../memory-graph/src/obsidian-writer";
 import { SqliteVectorStore } from "../../memory-vector/src/vector-store";
-import { LocalEmbedder, ApiEmbedder } from "../../memory-vector/src/embedder";
-import type { Embedder } from "../../memory-vector/src/embedder";
+import { LocalEmbedder, ApiEmbedder, SimpleEmbedder } from "../../memory-vector/src/embedder.ts";
+import type { Embedder } from "../../memory-vector/src/embedder.ts";
 import { HybridQueryEngine, type HybridQueryConfig } from "./index";
 import { MemoryLogger, type LogEntry, type LogLevel } from "./memory-logger";
 import { MemoryWatchdog, type HealthStatus, type WatchdogConfig, type EvaluationReport, type ReportCallback } from "./memory-watchdog";
@@ -33,8 +33,8 @@ export interface MemorySystemConfig {
   obsidianVaultPath?: string;
   /** Obsidian 子目录 */
   obsidianSubDir?: string;
-  /** Embedder 类型: 'local' | 'api' */
-  embedder?: "local" | "api";
+  /** Embedder 类型: 'local' | 'api' | 'simple' */
+  embedder?: "local" | "api" | "simple";
   /** API embedder 配置（仅 embedder='api' 时需要） */
   embedderApiKey?: string;
   embedderBaseUrl?: string;
@@ -139,6 +139,9 @@ export class MemorySystem {
           baseUrl: fullConfig.embedderBaseUrl,
         });
         sys.logger.info("init", "initEmbedder", "API embedder 已创建", { model: sys.embedder.modelName });
+      } else if (fullConfig.embedder === "simple") {
+        sys.embedder = new SimpleEmbedder();
+        sys.logger.info("init", "initEmbedder", "轻量内置 embedder 已创建", { dim: sys.embedder.dimension });
       } else {
         const local = new LocalEmbedder();
         await local.init();
