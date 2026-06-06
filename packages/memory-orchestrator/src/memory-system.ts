@@ -5,6 +5,9 @@
  *   init(dbPath) → 连接图 + 向量 + embedder
  *   write(entry) → 图写入 + 向量索引 + Obsidian 同步
  *   query(text)  → 混合查询
+ *   dream()      → 梦境整理（熵减）
+ *   getHealth()  → 健康检查
+ *   getLogs()    → 日志查询
  *   shutdown()   → flush 缓冲 + 关闭所有连接
  */
 
@@ -14,6 +17,8 @@ import { SqliteVectorStore } from "../../memory-vector/src/vector-store";
 import { LocalEmbedder, ApiEmbedder } from "../../memory-vector/src/embedder";
 import type { Embedder } from "../../memory-vector/src/embedder";
 import { HybridQueryEngine, type HybridQueryConfig } from "./index";
+import { MemoryLogger, type LogEntry, type LogLevel } from "./memory-logger";
+import { MemoryWatchdog, type HealthStatus, type WatchdogConfig } from "./memory-watchdog";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -40,6 +45,18 @@ export interface MemorySystemConfig {
   writeBufferSize?: number;
   /** 写入缓冲间隔（ms，默认 2000） */
   writeBufferIntervalMs?: number;
+  /** 日志配置 */
+  logger?: {
+    bufferSize?: number;
+    minLevel?: LogLevel;
+    persistErrors?: boolean;
+  };
+  /** 健康检查配置 */
+  watchdog?: Partial<WatchdogConfig>;
+  /** 错误通知回调（error/fatal 级别触发） */
+  onError?: (entry: LogEntry) => void;
+  /** 系统不健康回调 */
+  onUnhealthy?: (status: HealthStatus) => void;
 }
 
 const DEFAULT_CONFIG: Partial<MemorySystemConfig> = {
@@ -70,14 +87,22 @@ export class MemorySystem {
   private bufferTimer: ReturnType<typeof setTimeout> | null = null;
   private _initialized = false;
 
+  /** 日志系统 */
+  readonly logger: MemoryLogger;
+  /** 健康看门狗 */
+  readonly watchdog: MemoryWatchdog;
+
   private constructor(config: Required<MemorySystemConfig>) {
     this.config = config;
+    this.logger = new MemoryLogger(config.logger);
+    this.watchdog = null!; // Will be set after init
   }
 
   // ===== Initialize =====
 
   static async init(config: MemorySystemConfig): Promise<MemorySystem> {
     const fullConfig = { ...DEFAULT_CONFIG, ...config } as Required<MemorySystemConfig>;
+    const startedAt = Date.now();
 
     const cgDbPath = path.join(fullConfig.codegraphDir, "codegraph.db");
     if (!fs.existsSync(cgDbPath)) {
@@ -87,42 +112,116 @@ export class MemorySystem {
     const sys = new MemorySystem(fullConfig);
 
     // 1. Open graph DB
-    sys.memoryDb = MemoryDatabase.open(cgDbPath);
+    try {
+      sys.memoryDb = MemoryDatabase.open(cgDbPath);
+      sys.logger.info("init", "openGraph", "图数据库已连接", { path: cgDbPath });
+    } catch (err) {
+      sys.logger.error("init", "openGraph", "图数据库连接失败", err as Error, { path: cgDbPath });
+      throw err;
+    }
 
     // 2. Open vector store
-    const vecDbPath = path.join(fullConfig.codegraphDir, fullConfig.vectorDbFilename);
-    sys.vectorStore = SqliteVectorStore.open(vecDbPath);
+    try {
+      const vecDbPath = path.join(fullConfig.codegraphDir, fullConfig.vectorDbFilename);
+      sys.vectorStore = SqliteVectorStore.open(vecDbPath);
+      sys.logger.info("init", "openVector", "向量库已连接", { path: vecDbPath, entries: sys.vectorStore.stats().totalEntries });
+    } catch (err) {
+      sys.logger.error("init", "openVector", "向量库连接失败", err as Error);
+      throw err;
+    }
 
     // 3. Initialize embedder
-    if (fullConfig.embedder === "api") {
-      sys.embedder = new ApiEmbedder({
-        model: fullConfig.embedderModel ?? "text-embedding-3-small",
-        apiKey: fullConfig.embedderApiKey!,
-        baseUrl: fullConfig.embedderBaseUrl,
-      });
-    } else {
-      const local = new LocalEmbedder();
-      await local.init();
-      sys.embedder = local;
+    try {
+      if (fullConfig.embedder === "api") {
+        sys.embedder = new ApiEmbedder({
+          model: fullConfig.embedderModel ?? "text-embedding-3-small",
+          apiKey: fullConfig.embedderApiKey!,
+          baseUrl: fullConfig.embedderBaseUrl,
+        });
+        sys.logger.info("init", "initEmbedder", "API embedder 已创建", { model: sys.embedder.modelName });
+      } else {
+        const local = new LocalEmbedder();
+        await local.init();
+        sys.embedder = local;
+        sys.logger.info("init", "initEmbedder", "本地 embedder 已加载", { model: local.modelName, dim: local.dimension });
+      }
+    } catch (err) {
+      sys.logger.error("init", "initEmbedder", "Embedder 初始化失败", err as Error);
+      throw err;
     }
 
     // 4. Initialize Obsidian writer (optional)
     if (fullConfig.obsidianVaultPath) {
-      sys.obsidianWriter = new ObsidianWriter({
-        vaultPath: fullConfig.obsidianVaultPath,
-        subDir: fullConfig.obsidianSubDir,
-      });
+      try {
+        sys.obsidianWriter = new ObsidianWriter({
+          vaultPath: fullConfig.obsidianVaultPath,
+          subDir: fullConfig.obsidianSubDir,
+        });
+        sys.logger.info("init", "initObsidian", "Obsidian 同步已启用", { vault: fullConfig.obsidianVaultPath });
+      } catch (err) {
+        sys.logger.warn("init", "initObsidian", "Obsidian 初始化失败（不影响核心功能）", { error: (err as Error).message });
+      }
     }
 
     // 5. Initialize query engine
-    sys.queryEngine = new HybridQueryEngine(
-      sys.memoryDb,
-      sys.vectorStore,
-      sys.embedder,
-      fullConfig.hybridQuery,
+    try {
+      sys.queryEngine = new HybridQueryEngine(
+        sys.memoryDb,
+        sys.vectorStore,
+        sys.embedder,
+        fullConfig.hybridQuery,
+      );
+    } catch (err) {
+      sys.logger.error("init", "initQueryEngine", "查询引擎初始化失败", err as Error);
+      throw err;
+    }
+
+    // 6. Initialize watchdog (with logger persistence)
+    try {
+      // 绑定日志持久化到 graph DB
+      sys.logger.setPersistDb({
+        run: (sql: string, ...params: unknown[]) => {
+          sys.memoryDb.getRawDb().prepare(sql).run(...params);
+        },
+      });
+    } catch (err) {
+      // 日志持久化失败不影响核心功能
+      sys.logger.warn("init", "initLogger", "日志持久化设置失败", { error: (err as Error).message });
+    }
+
+    // 7. Initialize watchdog
+    const watchdog = new MemoryWatchdog(
+      sys.memoryDb, sys.vectorStore, sys.embedder,
+      sys.logger, sys.obsidianWriter, fullConfig.watchdog,
     );
+    (sys as any).watchdog = watchdog;
+
+    // 8. Register error callback from config
+    if (fullConfig.onError) {
+      sys.logger.onError(fullConfig.onError);
+    }
+
+    // 9. Register unhealthy callback from config
+    if (fullConfig.onUnhealthy) {
+      watchdog.onUnhealthy(fullConfig.onUnhealthy);
+    }
 
     sys._initialized = true;
+
+    // 记录 init 完成
+    const initDuration = Date.now() - startedAt;
+    sys.logger.info("init", "complete", `MemorySystem 初始化完成`, {
+      duration: initDuration,
+      codegraphDir: fullConfig.codegraphDir,
+      embedderType: fullConfig.embedder,
+    });
+
+    // 首次健康检查（不阻塞 init）
+    watchdog.checkHealth().catch(() => {});
+
+    // 自动启动定时健康检查
+    watchdog.start();
+
     return sys;
   }
 
@@ -130,12 +229,53 @@ export class MemorySystem {
     return this._initialized;
   }
 
+  // ===== Logger Accessors =====
+
+  /** 获取最近 N 条日志 */
+  getLogs(limit = 50, minLevel?: LogLevel): LogEntry[] {
+    return this.logger.getRecent(limit, minLevel);
+  }
+
+  /** 获取最近错误 */
+  getRecentErrors(hours = 1): LogEntry[] {
+    const cutoff = Date.now() - hours * 3600000;
+    return this.logger.getErrorsSince(cutoff);
+  }
+
+  /** 获取指定模块日志 */
+  getLogsByModule(module: string, limit = 20): LogEntry[] {
+    return this.logger.getByModule(module, limit);
+  }
+
+  /** 注册日志回调 */
+  onLog(cb: (entry: LogEntry) => void): void {
+    this.logger.onLog(cb);
+  }
+
+  /** 注册错误通知回调 */
+  onError(cb: (entry: LogEntry) => void): void {
+    this.logger.onError(cb);
+  }
+
+  // ===== Health Accessors =====
+
+  /** 执行一次健康检查 */
+  async checkHealth(): Promise<HealthStatus> {
+    return this.watchdog.checkHealth();
+  }
+
+  /** 获取最近一次健康状态 */
+  getHealth(): HealthStatus | null {
+    return this.watchdog.lastStatus;
+  }
+
+  /** 注册不健康回调 */
+  onUnhealthy(cb: (status: HealthStatus) => void): void {
+    this.watchdog.onUnhealthy(cb);
+  }
+
   // ===== Write (buffered) =====
 
-  /**
-   * 写入记忆条目。
-   * 写入缓冲 + 自动 flush，避免高频写入压垮 SQLite。
-   */
   async write(data: {
     title: string;
     summary?: string;
@@ -162,20 +302,30 @@ export class MemorySystem {
       ttlDays: data.ttlDays ?? null,
     });
 
+    this.logger.info("write", "createNode", `已创建记忆节点: ${node.title}`, {
+      nodeId: node.id,
+      importance: node.importance,
+      tags: node.tags,
+    });
+
     // Buffer the vector + obsidian write
     return new Promise((resolve, reject) => {
       this.writeBuffer.push({
         node,
-        resolve: () => resolve(node),
-        reject,
+        resolve: () => {
+          this.watchdog.recordWrite(true);
+          resolve(node);
+        },
+        reject: (err) => {
+          this.watchdog.recordWrite(false);
+          this.logger.error("write", "flush", `写入失败: ${node.title}`, err, { nodeId: node.id });
+          reject(err);
+        },
       });
       this.scheduleFlush();
     });
   }
 
-  /**
-   * 批量写入（不走缓冲，直接写入）
-   */
   async writeBatch(entries: Array<{
     title: string;
     summary?: string;
@@ -185,6 +335,8 @@ export class MemorySystem {
     nodeType?: MemoryNodeType;
     source?: MemorySource;
   }>): Promise<MemoryNode[]> {
+    this.logger.info("write", "writeBatch", `批量写入 ${entries.length} 条记忆`);
+
     const nodes: MemoryNode[] = [];
     const vectorEntries: Array<{
       id: string;
@@ -216,8 +368,15 @@ export class MemorySystem {
       });
       nodes.push(node);
 
-      const summary = data.summary ?? data.title;
-      const vector = await this.embedder.embed(summary);
+      let vector: Float32Array;
+      try {
+        const summary = data.summary ?? data.title;
+        vector = await this.embedder.embed(summary);
+      } catch (err) {
+        this.logger.error("write", "embedBatch", `Embedding 失败: ${data.title}`, err as Error);
+        throw err;
+      }
+
       vectorEntries.push({
         id: node.id,
         vector,
@@ -234,24 +393,32 @@ export class MemorySystem {
 
       // Sync to Obsidian
       if (this.obsidianWriter) {
-        try { this.obsidianWriter.write(node); } catch { /* non-blocking */ }
+        try { this.obsidianWriter.write(node); } catch (err) {
+          this.logger.warn("write", "obsidianSync", `Obsidian 同步失败: ${node.title}`, { error: (err as Error).message });
+        }
       }
     }
 
-    this.vectorStore.upsertBatch(vectorEntries);
+    try {
+      this.vectorStore.upsertBatch(vectorEntries);
+      this.logger.info("write", "embedBatch", `向量批量索引完成: ${vectorEntries.length} 条`);
+    } catch (err) {
+      this.logger.error("write", "embedBatch", "向量批量索引失败", err as Error);
+      throw err;
+    }
+
+    this.watchdog.recordWrite(true);
     return nodes;
   }
 
   private scheduleFlush(): void {
-    if (this.bufferTimer) return; // Already scheduled
+    if (this.bufferTimer) return;
 
-    // Flush when buffer reaches threshold
     if (this.writeBuffer.length >= this.config.writeBufferSize) {
       this.flush();
       return;
     }
 
-    // Or flush after interval
     this.bufferTimer = setTimeout(() => {
       this.bufferTimer = null;
       if (this.writeBuffer.length > 0) this.flush();
@@ -267,11 +434,12 @@ export class MemorySystem {
     const batch = this.writeBuffer.splice(0);
     if (batch.length === 0) return;
 
-    // Fire and forget — resolves each promise individually
+    this.logger.info("write", "flush", `Flush ${batch.length} 条缓冲记忆`);
+
     (async () => {
+      let successCount = 0;
       for (const entry of batch) {
         try {
-          // Embed and store vector
           const vector = await this.embedder.embed(entry.node.summary || entry.node.title);
           this.vectorStore.upsert(entry.node.id, vector, {
             nodeId: entry.node.id,
@@ -283,28 +451,48 @@ export class MemorySystem {
             source: entry.node.source,
           });
 
-          // Sync to Obsidian
           if (this.obsidianWriter) {
             this.obsidianWriter.write(entry.node);
           }
 
           entry.resolve();
+          successCount++;
         } catch (err) {
+          this.logger.error("write", "flushItem", `单条 flush 失败: ${entry.node.title}`, err as Error);
           entry.reject(err instanceof Error ? err : new Error(String(err)));
         }
       }
+      this.watchdog.recordWrite(successCount === batch.length);
     })();
   }
 
   // ===== Query =====
 
   async query(text: string, filter?: { importanceMin?: number }) {
-    return this.queryEngine.query(text, filter);
+    this.logger.info("query", "hybridSearch", `查询: "${text.slice(0, 60)}"`, filter);
+    const startTime = performance.now();
+
+    try {
+      const result = await this.queryEngine.query(text, filter);
+      const duration = Math.round(performance.now() - startTime);
+      this.logger.info("query", "hybridSearch", `查询完成: ${result.results.length} 条结果`, {
+        duration,
+        top1Score: result.telemetry.top1Score,
+        degraded: result.telemetry.degraded,
+      });
+      this.watchdog.recordQuery(true);
+      return result;
+    } catch (err) {
+      this.watchdog.recordQuery(false);
+      this.logger.error("query", "hybridSearch", `查询失败: "${text.slice(0, 60)}"`, err as Error);
+      throw err;
+    }
   }
 
   // ===== Link =====
 
   linkMemoryToCode(memoryId: string, codeSymbolId: string, description?: string): void {
+    this.logger.info("link", "memoryToCode", `关联记忆 → 代码符号`, { memoryId, codeSymbolId });
     this.memoryDb.linkMemoryToCode(memoryId, codeSymbolId, description);
   }
 
@@ -314,22 +502,51 @@ export class MemorySystem {
     relation: "causes" | "fixes" | "precedes" | "references" | "contradicts" | "supersedes" | "relates_to" | "implements",
     description?: string,
   ): void {
+    this.logger.info("link", "memoryToMemory", `关联记忆 → 记忆`, { sourceId, targetId, relation });
     this.memoryDb.linkMemoryToMemory(sourceId, targetId, relation, 1.0, description);
+  }
+
+  // ===== Dream (熵减) =====
+
+  async dream(dryRun = false): Promise<import("./dream").DreamReport> {
+    this.logger.info("dream", "consolidate", `启动梦境整理${dryRun ? " (预览模式)" : ""}`);
+    this.flush();
+
+    const { DreamEngine } = await import("./dream");
+    const engine = new DreamEngine(
+      this.memoryDb,
+      this.vectorStore,
+      this.embedder,
+      { dryRun },
+    );
+
+    try {
+      const report = await engine.consolidate();
+      this.logger.info("dream", "consolidate", `梦境完成: 合并${report.actions.merged.length} 聚类${report.actions.insights.length} 归档${report.actions.archived.length} 删除${report.actions.deleted.length}`, {
+        healthScore: report.healthScore,
+        beforeNodes: report.summary.before.nodes,
+        afterNodes: report.summary.after.nodes,
+        duration: report.duration,
+      });
+      this.watchdog.recordDream(true);
+      return report;
+    } catch (err) {
+      this.watchdog.recordDream(false);
+      this.logger.error("dream", "consolidate", "梦境整理失败", err as Error);
+      throw err;
+    }
   }
 
   // ===== Maintenance =====
 
-  /**
-   * 剪枝：删除过期节点 + 归档低重要度孤立节点
-   */
   prune(options?: { dryRun?: boolean }): { deleted: number; archived: number } {
     this.flush();
-    return this.memoryDb.prune(options?.dryRun ?? false);
+    this.logger.info("maintenance", "prune", `执行剪枝${options?.dryRun ? " (预览)" : ""}`);
+    const result = this.memoryDb.prune(options?.dryRun ?? false);
+    this.logger.info("maintenance", "prune", `剪枝完成: 删除${result.deleted} 归档${result.archived}`);
+    return result;
   }
 
-  /**
-   * 一致性检查：验证向量库 ↔ 图数据库同步状态
-   */
   checkConsistency(): {
     inGraph: number;
     inVector: number;
@@ -338,41 +555,30 @@ export class MemorySystem {
     ok: boolean;
   } {
     this.flush();
-
-    // Get all node IDs from graph
+    this.logger.info("maintenance", "consistency", "检查一致性");
     const stats = this.memoryDb.getStats();
-    const allGraphNodes = this.memoryDb.searchByText("", 99999);
-
-    // Get all entries from vector store
     const vecStats = this.vectorStore.stats();
+    const ok = Math.abs(stats.totalNodes - vecStats.totalEntries) < 10;
 
-    // We can't enumerate all vector IDs efficiently, so compare counts
-    const graphCount = stats.totalNodes;
-    const vectorCount = vecStats.totalEntries;
-
-    // Spot-check: iterate a few random graph nodes and verify they have vectors
-    const graphOnly: string[] = [];
-    for (const node of allGraphNodes.slice(0, 50)) {
-      // Query the vector store with the node's title to see if it returns itself
-      const result = this.memoryDb.searchByTag(node.id.slice(0, 8), 1);
-      // Rough check
+    if (!ok) {
+      this.logger.warn("maintenance", "consistency", `图库与向量库不一致`, {
+        graphNodes: stats.totalNodes,
+        vectorEntries: vecStats.totalEntries,
+      });
     }
 
     return {
-      inGraph: graphCount,
-      inVector: vectorCount,
-      graphOnly,
+      inGraph: stats.totalNodes,
+      inVector: vecStats.totalEntries,
+      graphOnly: [],
       vectorOnly: [],
-      ok: Math.abs(graphCount - vectorCount) < 10, // Allow small discrepancy due to buffering
+      ok,
     };
   }
 
-  /**
-   * 重建向量索引（从图数据库全量重建）
-   */
   async rebuildVectorIndex(): Promise<number> {
     this.flush();
-
+    this.logger.info("maintenance", "rebuildVector", "重建向量索引开始");
     this.vectorStore.clear();
 
     const allNodes = this.memoryDb.searchByText("", 99999);
@@ -390,71 +596,72 @@ export class MemorySystem {
       };
     }> = [];
 
+    let errors = 0;
+
     for (const node of allNodes) {
-      const summary = node.summary || node.title;
-      const vector = await this.embedder.embed(summary);
-      batch.push({
-        id: node.id,
-        vector,
-        metadata: {
-          nodeId: node.id,
-          type: node.nodeType,
-          title: node.title,
-          summary: node.summary,
-          importance: node.importance,
-          createdAt: node.createdAt,
-          source: node.source,
-        },
-      });
+      try {
+        const summary = node.summary || node.title;
+        const vector = await this.embedder.embed(summary);
+        batch.push({
+          id: node.id,
+          vector,
+          metadata: {
+            nodeId: node.id,
+            type: node.nodeType,
+            title: node.title,
+            summary: node.summary,
+            importance: node.importance,
+            createdAt: node.createdAt,
+            source: node.source,
+          },
+        });
+      } catch (err) {
+        errors++;
+        this.logger.error("maintenance", "rebuildVector", `重建向量失败: ${node.title}`, err as Error);
+      }
     }
 
     if (batch.length > 0) {
       this.vectorStore.upsertBatch(batch);
     }
 
+    this.logger.info("maintenance", "rebuildVector", `重建完成: ${batch.length} 条, ${errors} 条失败`);
     return batch.length;
-  }
-
-  // ===== Dream (熵减) =====
-
-  /**
-   * 执行梦境整理循环。
-   * 这是系统的熵减机制：合并冗余、聚类提炼、修剪低价值。
-   *
-   * @param dryRun 预览模式，不实际修改数据
-   */
-  async dream(dryRun = false): Promise<import("./dream").DreamReport> {
-    this.flush();
-    const { DreamEngine } = await import("./dream");
-    const engine = new DreamEngine(
-      this.memoryDb,
-      this.vectorStore,
-      this.embedder,
-      { dryRun },
-    );
-    return engine.consolidate();
   }
 
   // ===== Stats =====
 
   stats() {
     this.flush();
-
     const graphStats = this.memoryDb.getStats();
     const vecStats = this.vectorStore.stats();
     const obsidianCount = this.obsidianWriter?.count() ?? 0;
+    const health = this.watchdog.lastStatus;
+    const recentErrors = this.logger.getRecentErrorCount(3600000);
 
     return {
       graph: graphStats,
       vector: { total: vecStats.totalEntries, dimension: vecStats.dimension },
       obsidian: obsidianCount,
       bufferPending: this.writeBuffer.length,
+      health: health ? {
+        score: health.score,
+        healthy: health.healthy,
+        uptime: this.watchdog.getUptime(),
+      } : null,
+      recentErrors,
+      logger: { buffered: this.logger.getRecent(1).length > 0 ? "active" : "empty" },
     };
   }
 
   // ===== Shutdown =====
 
   async shutdown(): Promise<void> {
+    this.logger.info("shutdown", "begin", "MemorySystem 关闭中...");
+
+    // Stop watchdog
+    this.watchdog.stop();
+
     // Flush remaining buffer
     if (this.writeBuffer.length > 0) {
       await new Promise<void>((resolve) => {
@@ -470,5 +677,7 @@ export class MemorySystem {
     this.memoryDb.close();
     this.vectorStore.close();
     this._initialized = false;
+
+    this.logger.info("shutdown", "complete", "MemorySystem 已关闭");
   }
 }
