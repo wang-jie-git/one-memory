@@ -1,147 +1,168 @@
-# Spec 02: CodeGraph Memory Node Schema
+# Spec 02: Graph Schema — Memory Tables
 
-**状态**: Draft | **优先级**: P0 | **最后更新**: 2026-06-06
+**状态**: Draft → **Implementing** | **优先级**: P0 | **最后更新**: 2026-06-06
 
-## 1. 节点类型定义
+## 1. 设计原则
 
-### `memory_entry`
+- **不修改 CodeGraph 的 `nodes`/`edges` 表**
+- **在同一个 SQLite DB 中新增平行表**: `memory_nodes` / `memory_edges`
+- `memory_edges` 引用 `nodes` 表的 `id` 实现记忆→代码关联（外键）
+- `memory_nodes` 之间的关联走 `memory_edges` 自己的引用
 
-```typescript
-interface MemoryEntry {
-  // === 必填字段 ===
-  id: string;                    // UUID v4
-  type: "memory_entry";
-  label: string;                 // 显示标签（节点标题，用于图展示）
-  title: string;                 // 完整标题
-  summary: string;               // 摘要 1-3 句话（用于向量 embedding）
-  content_hash: string;          // SHA256 of body content
-  
-  // === 元数据 ===
-  importance: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
-  created_at: number;            // Unix timestamp ms
-  updated_at: number;
-  ttl_days: number | null;       // null = 永不过期
-  
-  // === 来源追踪 ===
-  source: "agent" | "user" | "system" | "codegraph" | "imported";
-  source_session: string | null; // 来源会话 ID
-  
-  // === 向量关联 ===
-  vector_id: string | null;      // 向量库中的对应 ID
-  last_embedded_at: number | null;
-  
-  // === 状态 ===
-  status: "active" | "archived" | "pending_review";
-  tags: string[];                // 标签（语义检索辅助）
-}
+## 2. SQL Schema
+
+```sql
+-- =============================================================================
+-- Memory Schema Version 1
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS memory_schema_versions (
+    version INTEGER PRIMARY KEY,
+    applied_at INTEGER NOT NULL,
+    description TEXT
+);
+
+-- =============================================================================
+-- Memory Nodes: AI-generated and user-created memory entries
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id TEXT PRIMARY KEY,                          -- UUID v4
+    title TEXT NOT NULL,                          -- 记忆标题
+    summary TEXT NOT NULL DEFAULT '',              -- 摘要（用于 embedding）
+    body TEXT NOT NULL DEFAULT '',                 -- 完整内容（markdown）
+    content_hash TEXT NOT NULL,                    -- SHA256 去重
+    importance INTEGER NOT NULL DEFAULT 5,         -- 1-10
+    status TEXT NOT NULL DEFAULT 'active'          -- active | archived | pending_review
+        CHECK (status IN ('active', 'archived', 'pending_review')),
+    source TEXT NOT NULL DEFAULT 'agent'           -- agent | user | system | imported
+        CHECK (source IN ('agent', 'user', 'system', 'imported')),
+    source_session TEXT,                           -- 来源会话 ID
+    tags TEXT NOT NULL DEFAULT '[]',               -- JSON array ["tag1","tag2"]
+    node_type TEXT NOT NULL DEFAULT 'memory_entry' -- memory_entry | decision | project_milestone
+        CHECK (node_type IN ('memory_entry', 'decision', 'project_milestone')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ttl_days INTEGER                              -- NULL = 永不过期
+);
+
+-- 决策专用扩展字段（当 node_type = 'decision' 时使用）
+-- decision_context TEXT
+-- decision_options TEXT   -- JSON array
+-- decision_chosen TEXT
+-- decision_rationale TEXT
+-- decision_outcome TEXT   -- success | failure | pending | unknown
+
+-- =============================================================================
+-- Memory Edges: Relationships between memory entries and/or code symbols
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS memory_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL                       -- 'memory' | 'code'
+        CHECK (source_type IN ('memory', 'code')),
+    source_id TEXT NOT NULL,                        -- memory_nodes.id 或 nodes.id
+    target_type TEXT NOT NULL                       -- 'memory' | 'code'
+        CHECK (target_type IN ('memory', 'code')),
+    target_id TEXT NOT NULL,                        -- memory_nodes.id 或 nodes.id
+    relation TEXT NOT NULL                          -- links_to_code | causes | fixes | precedes | ...
+        CHECK (relation IN (
+            'links_to_code',     -- memory → code: 关联代码符号
+            'causes',            -- memory → memory: A 导致了 B
+            'fixes',             -- memory → memory: A 修复了 B
+            'precedes',          -- memory → memory: A 早于 B
+            'follows',           -- memory → memory: A 晚于 B
+            'references',        -- memory → memory: A 引用了 B
+            'contradicts',       -- memory → memory: A 与 B 矛盾
+            'supersedes',        -- memory → memory: A 取代了 B
+            'relates_to',        -- memory → memory: 弱关联
+            'implements',        -- memory → memory: A 实现了 B 的决策
+            'questions'          -- memory → memory: A 对 B 提出质疑
+        )),
+    weight REAL NOT NULL DEFAULT 1.0,               -- 0.0 - 1.0 关联强度
+    description TEXT NOT NULL DEFAULT '',            -- 关联说明
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES memory_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES memory_nodes(id) ON DELETE CASCADE
+    -- 注意: source_type='code' 时，source_id 引用 nodes(id)，但 SQLite 不支持跨表 FK
+);
+
+-- =============================================================================
+-- 嵌入向量元数据（指向外部向量库）
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS memory_vectors (
+    id TEXT PRIMARY KEY,                            -- UUID，对应 memory_nodes.id
+    node_id TEXT NOT NULL UNIQUE,                   -- memory_nodes.id
+    embedder_name TEXT NOT NULL,                    -- 模型名: all-MiniLM-L6-v2
+    dimension INTEGER NOT NULL,                     -- 向量维度: 384
+    created_at INTEGER NOT NULL,                    -- 向量化时间
+    FOREIGN KEY (node_id) REFERENCES memory_nodes(id) ON DELETE CASCADE
+);
+
+-- =============================================================================
+-- Indexes
+-- =============================================================================
+
+-- 按标签查询
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_tags ON memory_nodes(tags);
+-- 按来源查询
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_source ON memory_nodes(source);
+-- 按时序查询
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_created_at ON memory_nodes(created_at);
+-- 按重要性查询
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_importance ON memory_nodes(importance);
+-- 按状态查询
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_status ON memory_nodes(status);
+
+-- 记忆边查询
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, source_type);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id, target_type);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_relation ON memory_edges(relation);
+
+-- 向量元数据
+CREATE INDEX IF NOT EXISTS idx_memory_vectors_node ON memory_vectors(node_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_vectors_node_unique ON memory_vectors(node_id);
 ```
 
-### `decision` (extends `memory_entry`)
+## 3. 跨表查询示例
 
-```typescript
-interface Decision extends MemoryEntry {
-  type: "decision";
-  context: string;               // 决策背景（markdown）
-  options: Array<{
-    name: string;
-    description: string;
-    pros: string[];
-    cons: string[];
-  }>;
-  chosen: string;                // 选定选项的 name
-  rationale: string;             // 选择理由
-  outcome: "success" | "failure" | "pending" | "unknown";
-  outcome_evidence: string | null;  // 结果证据（链接/描述）
-}
+```sql
+-- 查询记忆条目及其关联的代码符号
+SELECT
+    mn.id AS memory_id,
+    mn.title,
+    n.name AS code_symbol_name,
+    n.kind AS code_symbol_kind,
+    n.file_path,
+    me.relation
+FROM memory_nodes mn
+JOIN memory_edges me ON me.source_id = mn.id AND me.source_type = 'memory'
+JOIN nodes n ON n.id = me.target_id AND me.target_type = 'code'
+WHERE mn.status = 'active'
+ORDER BY mn.importance DESC;
+
+-- 查询决策及其因果链
+SELECT
+    d.id,
+    d.title,
+    d.body AS decision_context,
+    me.relation,
+    mn_related.title AS related_memory
+FROM memory_nodes d
+JOIN memory_edges me ON me.source_id = d.id AND me.source_type = 'memory'
+JOIN memory_nodes mn_related ON mn_related.id = me.target_id AND me.target_type = 'memory'
+WHERE d.node_type = 'decision'
+  AND me.relation IN ('causes', 'fixes', 'implements');
 ```
 
-### `project_milestone` (extends `memory_entry`)
+## 4. vs CodeGraph 原生 `nodes` 表
 
-```typescript
-interface ProjectMilestone extends MemoryEntry {
-  type: "project_milestone";
-  milestone_date: number;        // 里程碑日期
-  phase: string;                 // 阶段名
-  key_deliverables: string[];
-  participants: string[];
-}
-```
-
-## 2. 边类型定义
-
-### `links_to_code`
-
-```typescript
-interface LinksToCode {
-  type: "links_to_code";
-  source: string;                // memory_entry.id
-  target: string;                // codegraph symbol id
-  strength: "strong" | "weak" | "auto_detected" | "user_confirmed";
-  direction: "memory_to_code" | "code_to_memory";  // 谁指向谁
-  description: string;           // 关联说明
-  created_at: number;
-  auto_confidence?: number;      // 自动关联时的置信度 0-1
-}
-```
-
-### `links_to_memory`
-
-```typescript
-interface LinksToMemory {
-  type: "links_to_memory";
-  source: string;
-  target: string;
-  relation: 
-    | "causes"           // A 导致了 B
-    | "fixes"            // A 修复了 B
-    | "precedes"         // A 早于 B（时序）
-    | "follows"          // A 晚于 B（时序）
-    | "references"       // A 引用了 B
-    | "contradicts"      // A 与 B 矛盾
-    | "supersedes"       // A 取代了 B（新决策替代旧决策）
-    | "relates_to"       // 弱关联（默认）
-    | "implements"       // A 实现了 B 的决策
-    | "questions";       // A 对 B 提出质疑
-  weight: number;                // 0.0 - 1.0 关联强度
-  description: string;
-}
-```
-
-## 3. 图重要度传播
-
-```
-MemoryEntry 的 importance 不是最终值，会通过边传播：
-
-effective_importance(node) = 
-  node.importance * 0.7 + 
-  avg(incoming_links_to_memory.weight * source.effective_importance) * 0.2 +
-  avg(incoming_links_to_code) * 0.1
-
-传播边界：max_depth=3，防止全图震荡
-```
-
-## 4. CodeGraph API 扩展
-
-```typescript
-// 新增 API（注册到 CodeGraph 引擎）
-
-// 记忆节点操作
-createMemoryEntry(data: MemoryEntry): string;    // 返回 node_id
-getMemoryEntry(id: string): MemoryEntry | null;
-updateMemoryEntry(id: string, data: Partial<MemoryEntry>): void;
-deleteMemoryEntry(id: string): void;
-
-// 关联操作
-linkMemoryToCode(memoryId: string, codeSymbolId: string, strength: string): void;
-linkMemoryToMemory(sourceId: string, targetId: string, relation: string, weight: number): void;
-
-// 查询操作
-getRelatedMemories(nodeId: string, options: {
-  depth?: number;               // 遍历深度
-  relationTypes?: string[];     // 过滤关系类型
-  minWeight?: number;           // 最小关联权重
-}): MemoryGraphQueryResult[];
-
-// 图健康
-getMemoryStats(): { totalNodes: number; totalEdges: number; byType: Record<string, number> };
-```
+| 维度 | `nodes` (CodeGraph) | `memory_nodes` (One Memory) |
+|------|--------------------|----------------------------|
+| 用途 | 代码符号 | 记忆/决策/里程碑 |
+| ID 格式 | `FileSymbol_qualified_name` | UUID v4 |
+| 字段 | code-specific (start_line, language, etc.) | memory-specific (summary, tags, importance) |
+| FTS | 有 (nodes_fts) | 无（后期加） |
+| 谁写入 | CodeGraph 索引器 | memory-graph |
+| 谁读取 | CodeGraph 查询 | memory-orchestrator |
