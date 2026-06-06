@@ -61,14 +61,15 @@ function createDB(dbPath: string): SqliteDB {
 
 // ===== Memory Types =====
 
-export type MemoryNodeType = "memory_entry" | "decision" | "project_milestone";
+export type MemoryNodeType = "memory_entry" | "decision" | "project_milestone" | "insight";
 export type MemoryStatus = "active" | "archived" | "pending_review";
 export type MemorySource = "agent" | "user" | "system" | "imported";
 export type EdgeRelation =
   | "links_to_code"
   | "causes" | "fixes" | "precedes" | "follows"
   | "references" | "contradicts" | "supersedes"
-  | "relates_to" | "implements" | "questions";
+  | "relates_to" | "implements" | "questions"
+  | "summarizes" | "dream_log";
 
 export interface MemoryNode {
   id: string;
@@ -109,7 +110,7 @@ export interface MemoryGraphStats {
 
 // ===== Database Connection =====
 
-const MEMORY_SCHEMA_VERSION = 1;
+const MEMORY_SCHEMA_VERSION = 2;
 
 export class MemoryDatabase {
   private db: SqliteDB;
@@ -495,6 +496,14 @@ export class MemoryDatabase {
     }
 
     return { deleted: expired.length, archived: lowImp.length };
+  }
+
+  /** Get all nodes regardless of status (for dream engine maintenance) */
+  getAllNodes(): MemoryNode[] {
+    const rows = this.db
+      .prepare("SELECT * FROM memory_nodes")
+      .all() as Record<string, unknown>[];
+    return rows.map((r) => this.rowToNode(r));
   }
 
   /** Close the database connection */

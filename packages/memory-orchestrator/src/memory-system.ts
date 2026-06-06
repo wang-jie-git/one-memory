@@ -415,6 +415,26 @@ export class MemorySystem {
     return batch.length;
   }
 
+  // ===== Dream (熵减) =====
+
+  /**
+   * 执行梦境整理循环。
+   * 这是系统的熵减机制：合并冗余、聚类提炼、修剪低价值。
+   *
+   * @param dryRun 预览模式，不实际修改数据
+   */
+  async dream(dryRun = false): Promise<import("./dream").DreamReport> {
+    this.flush();
+    const { DreamEngine } = await import("./dream");
+    const engine = new DreamEngine(
+      this.memoryDb,
+      this.vectorStore,
+      this.embedder,
+      { dryRun },
+    );
+    return engine.consolidate();
+  }
+
   // ===== Stats =====
 
   stats() {

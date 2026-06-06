@@ -1,4 +1,4 @@
--- One Memory Schema v1
+-- One Memory Schema v2 — 梦境引擎支持
 -- 在 CodeGraph 的 DB 中新增平行表，不修改 nodes/edges
 
 -- =============================================================================
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     source_session TEXT,
     tags TEXT NOT NULL DEFAULT '[]',
     node_type TEXT NOT NULL DEFAULT 'memory_entry'
-        CHECK (node_type IN ('memory_entry', 'decision', 'project_milestone')),
+        CHECK (node_type IN ('memory_entry', 'decision', 'project_milestone', 'insight')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ttl_days INTEGER
@@ -52,12 +52,36 @@ CREATE TABLE IF NOT EXISTS memory_edges (
         CHECK (relation IN (
             'links_to_code', 'causes', 'fixes', 'precedes',
             'follows', 'references', 'contradicts', 'supersedes',
-            'relates_to', 'implements', 'questions'
+            'relates_to', 'implements', 'questions', 'summarizes',
+            'dream_log'
         )),
     weight REAL NOT NULL DEFAULT 1.0
         CHECK (weight >= 0.0 AND weight <= 1.0),
     description TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
+);
+
+-- =============================================================================
+-- Dream Logs（梦境运行记录）
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS dream_logs (
+    id TEXT PRIMARY KEY,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    duration_ms INTEGER,
+    before_nodes INTEGER,
+    before_edges INTEGER,
+    after_nodes INTEGER,
+    after_edges INTEGER,
+    merged_count INTEGER DEFAULT 0,
+    archived_count INTEGER DEFAULT 0,
+    deleted_count INTEGER DEFAULT 0,
+    insights_generated INTEGER DEFAULT 0,
+    health_score REAL,
+    report_json TEXT,
+    status TEXT NOT NULL DEFAULT 'running'
+        CHECK (status IN ('running', 'completed', 'failed'))
 );
 
 -- =============================================================================
