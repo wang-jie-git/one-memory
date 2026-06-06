@@ -18,7 +18,7 @@ import { LocalEmbedder, ApiEmbedder } from "../../memory-vector/src/embedder";
 import type { Embedder } from "../../memory-vector/src/embedder";
 import { HybridQueryEngine, type HybridQueryConfig } from "./index";
 import { MemoryLogger, type LogEntry, type LogLevel } from "./memory-logger";
-import { MemoryWatchdog, type HealthStatus, type WatchdogConfig } from "./memory-watchdog";
+import { MemoryWatchdog, type HealthStatus, type WatchdogConfig, type EvaluationReport, type ReportCallback } from "./memory-watchdog";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
@@ -272,6 +272,23 @@ export class MemorySystem {
   /** 注册不健康回调 */
   onUnhealthy(cb: (status: HealthStatus) => void): void {
     this.watchdog.onUnhealthy(cb);
+  }
+
+  // ===== Evaluation Report =====
+
+  /** 生成评估报告（手动触发） */
+  generateReport(): EvaluationReport {
+    return this.watchdog.generateReport(undefined, "on_demand");
+  }
+
+  /** 注册评估报告回调（系统不健康时自动触发） */
+  onReport(cb: ReportCallback): void {
+    this.watchdog.onReport(cb);
+  }
+
+  /** 获取格式化文本报告 */
+  formatReport(report?: EvaluationReport): string {
+    return this.watchdog.formatReport(report);
   }
 
   // ===== Write (buffered) =====

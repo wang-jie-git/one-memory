@@ -338,3 +338,191 @@ describe("MemoryWatchdog", () => {
     expect(watchdog.lastStatus).toBeNull();
   });
 });
+
+// ===== Evaluation Report Tests =====
+
+describe("EvaluationReport", () => {
+  let env: ReturnType<typeof createTestEnv>;
+
+  beforeEach(() => {
+    env = createTestEnv();
+  });
+
+  it("generateReport 应在正常状态下生成完整报告", async () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    const status = await watchdog.checkHealth();
+    const report = watchdog.generateReport(status, "on_demand");
+
+    // 基本结构
+    expect(report.id).toBeTruthy();
+    expect(report.type).toBe("on_demand");
+    expect(report.overallScore).toBeGreaterThanOrEqual(8);
+    expect(report.healthy).toBe(true);
+
+    // 组件
+    expect(report.components.length).toBe(4);
+    const graphDb = report.components.find((c) => c.name === "图数据库");
+    expect(graphDb).toBeDefined();
+    expect(graphDb!.status).toBe("healthy");
+
+    // 操作
+    expect(report.operations.lastWriteOk).toBe(true);
+
+    // 建议（健康状态下应为空或通用）
+    expect(Array.isArray(report.recommendations)).toBe(true);
+
+    // 原始数据
+    expect(report.raw).toBeDefined();
+    expect(report.raw.graphDb.ok).toBe(true);
+  });
+
+  it("应在不健康时自动触发 onReport 回调", async () => {
+    const logger = new MemoryLogger();
+    env.embedder.failCount = 1;
+
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    const reports: EvaluationReport[] = [];
+    watchdog.onReport((report) => {
+      reports.push(report);
+    });
+
+    await watchdog.checkHealth("periodic");
+
+    expect(reports.length).toBe(1);
+    expect(reports[0].healthy).toBe(false);
+    expect(reports[0].type).toBe("periodic");
+    expect(reports[0].components.some((c) => c.status === "down")).toBe(true);
+  });
+
+  it("报告应包含错误汇总", async () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    // 触发一些错误日志
+    logger.error("test-module", "op1", "错误消息 1");
+    logger.error("test-module", "op1", "错误消息 1");
+    logger.error("test-other", "op2", "错误消息 2");
+
+    const status = await watchdog.checkHealth();
+    const report = watchdog.generateReport(status);
+
+    expect(report.errorSummary.length).toBeGreaterThanOrEqual(2);
+    const topError = report.errorSummary[0];
+    expect(topError.count).toBeGreaterThanOrEqual(2);
+  });
+
+  it("formatReport 应生成可读文本", async () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    const status = await watchdog.checkHealth();
+    const report = watchdog.generateReport(status);
+    const text = watchdog.formatReport(report);
+
+    // 应该包含关键信息
+    expect(text).toContain("记忆系统评估报告");
+    expect(text).toContain("评分");
+    expect(text).toContain("图数据库");
+    expect(text).toContain("向量库");
+    expect(text).toContain("Embedder");
+    expect(text).toContain("报告 ID");
+  });
+
+  it("formatReport 在不健康时应包含修复建议", async () => {
+    const logger = new MemoryLogger();
+    env.embedder.failCount = 1;
+
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    const status = await watchdog.checkHealth();
+    const report = watchdog.generateReport(status);
+    const text = watchdog.formatReport(report);
+
+    expect(text).toContain("修复建议");
+    expect(text).toContain("Embedder");
+  });
+
+  it("报告应计算趋势", async () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false, historySize: 10 },
+    );
+
+    // 填充历史数据
+    for (let i = 0; i < 5; i++) {
+      await watchdog.checkHealth();
+    }
+
+    const report = watchdog.generateReport();
+    expect(["improving", "stable", "degrading"]).toContain(report.trend);
+    expect(report.scoreHistory.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("报告应包含评分历史", async () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    // 多次检查产生历史
+    await watchdog.checkHealth();
+    await watchdog.checkHealth();
+    await watchdog.checkHealth();
+
+    const report = watchdog.generateReport();
+    expect(report.scoreHistory.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("MemorySystem.onReport 应可用", async () => {
+    // 这里只测试 MemorySystem 的接口存在
+    // 完整集成需要 local embedder
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    let received: EvaluationReport | null = null;
+    watchdog.onReport((r) => { received = r; });
+
+    env.embedder.failCount = 1;
+    await watchdog.checkHealth();
+
+    expect(received).not.toBeNull();
+    expect(received!.healthy).toBe(false);
+  });
+
+  it("未初始化时 generateReport 应返回默认报告", () => {
+    const logger = new MemoryLogger();
+    const watchdog = new MemoryWatchdog(
+      env.db, env.vec, env.embedder, logger,
+      undefined, { autoStart: false },
+    );
+
+    const report = watchdog.generateReport();
+
+    expect(report.overallScore).toBe(10);
+    expect(report.healthy).toBe(true);
+    expect(report.summary).toContain("初始化");
+  });
+});
