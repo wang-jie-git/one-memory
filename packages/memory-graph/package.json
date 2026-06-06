@@ -1,0 +1,18 @@
+{
+  "name": "@one/memory-graph",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CodeGraph 记忆引擎集成层 — 记忆节点类型、图遍历查询、Obsidian 同步",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
+}
