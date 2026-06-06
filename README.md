@@ -102,11 +102,18 @@ one-memory/
 ```typescript
 import { MemorySystem } from "@one/memory-orchestrator";
 
-// 初始化
+// 初始化（关闭 Obsidian 同步）
 const ms = await MemorySystem.init({
   codegraphDir: "/path/to/.codegraph",
   embedder: "local",
 });
+
+// 开启 Obsidian 同步（可选）
+// const ms = await MemorySystem.init({
+//   codegraphDir: "/path/to/.codegraph",
+//   embedder: "local",
+//   obsidianVaultPath: "/path/to/vault",  // ← 可选
+// });
 
 // 写入记忆（图 + 向量 + Obsidian 同步）
 await ms.write({

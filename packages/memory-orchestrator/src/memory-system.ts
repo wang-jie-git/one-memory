@@ -29,7 +29,7 @@ export interface MemorySystemConfig {
   codegraphDir: string;
   /** 向量存储文件名（相对 codegraphDir） */
   vectorDbFilename?: string;
-  /** Obsidian Vault 根路径 */
+  /** Obsidian Vault 根路径（可选，不填则不初始化 ObsidianWriter） */
   obsidianVaultPath?: string;
   /** Obsidian 子目录 */
   obsidianSubDir?: string;
