@@ -1,10 +1,23 @@
-// One Memory — 混合查询编排器
-// 本文件定义 HybridQuery Engine 的核心逻辑
+/**
+ * memory-orchestrator: 混合查询编排器
+ *
+ * 向量粗召回 → 图遍历精排序 → 融合打分 → 返回 TOP K
+ *
+ * 架构:
+ *   query("支付超时")
+ *     ├── embedder.embed("支付超时") → queryVector
+ *     ├── vectorStore.query(queryVector, topK=20) → candidates
+ *     ├── for each candidate:
+ *     │     memoryDb.getRelatedMemories(id) → graphRelevance
+ *     │     computeRecency(createdAt) → recencyScore
+ *     └── finalScore = α * vectorScore + β * graphScore + γ * recencyScore
+ */
 
-import type { MemoryGraphAPI, MemoryGraphQueryResult, MemoryEntry } from "@one/memory-graph";
-import type { VectorStore, VectorResult } from "@one/memory-vector";
+import { MemoryDatabase } from "../../memory-graph/src/database";
+import { SqliteVectorStore, type VectorQueryOptions } from "../../memory-vector/src/vector-store";
+import type { Embedder } from "../../memory-vector/src/embedder";
 
-// === 配置 ===
+// ===== Config =====
 
 export interface HybridQueryConfig {
   alpha: number;         // 向量相似度权重 (default 0.4)
@@ -26,7 +39,7 @@ export const DEFAULT_CONFIG: HybridQueryConfig = {
   timeoutMs: 1000,
 };
 
-// === 查询结果 ===
+// ===== Result Types =====
 
 export interface MemoryQueryResult {
   nodeId: string;
@@ -45,7 +58,7 @@ export interface MemoryQueryResult {
     type: string;
     tags: string[];
     importance: number;
-    created_at: number;
+    createdAt: number;
     source: string;
   };
 }
@@ -55,7 +68,8 @@ export interface QueryTelemetry {
   vectorTimeMs: number;
   graphTimeMs: number;
   candidatesCount: number;
-  degraded: false | "graph_timeout" | "vector_timeout" | "both_timeout" | "vector_empty" | "graph_empty";
+  returnedCount: number;
+  degraded: false | "graph_timeout" | "vector_timeout" | "both_timeout";
   top1Score: number;
 }
 
@@ -64,30 +78,247 @@ export interface HybridQueryResponse {
   telemetry: QueryTelemetry;
 }
 
-// === 查询引擎 ===
+// ===== Hybrid Query Engine =====
 
 export class HybridQueryEngine {
   private config: HybridQueryConfig;
-  private graphAPI: MemoryGraphAPI;
-  private vectorStore: VectorStore;
+  private memoryDb: MemoryDatabase;
+  private vectorStore: SqliteVectorStore;
+  private embedder: Embedder;
 
   constructor(
-    graphAPI: MemoryGraphAPI,
-    vectorStore: VectorStore,
+    memoryDb: MemoryDatabase,
+    vectorStore: SqliteVectorStore,
+    embedder: Embedder,
     config: Partial<HybridQueryConfig> = {},
   ) {
-    this.graphAPI = graphAPI;
+    this.memoryDb = memoryDb;
     this.vectorStore = vectorStore;
+    this.embedder = embedder;
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  async query(query: string, filter?: VectorQueryOptions["filter"]): Promise<HybridQueryResponse> {
-    // Step 1: 向量粗召回
-    // Step 2: 图遍历精排序
-    // Step 3: 融合重排序
-    // Step 4: 返回 TOP K
-    throw new Error("Not implemented yet — Phase 1 target");
+  /**
+   * Hybrid query: vector semantic recall → graph traversal refine → fusion scoring
+   */
+  async query(
+    queryText: string,
+    filter?: VectorQueryOptions["filter"],
+  ): Promise<HybridQueryResponse> {
+    const startTime = performance.now();
+    let vectorTimeMs = 0;
+    let graphTimeMs = 0;
+    let degraded: QueryTelemetry["degraded"] = false;
+
+    // ── Step 1: Embed the query text ──
+    let queryVector: Float32Array;
+    try {
+      const t0 = performance.now();
+      queryVector = await this.embedder.embed(queryText);
+      vectorTimeMs += performance.now() - t0;
+    } catch (err) {
+      // Embedder failed — degrade to text search only
+      degraded = "vector_timeout";
+      return this.fallbackTextSearch(queryText, filter, startTime);
+    }
+
+    // ── Step 2: Vector coarse recall ──
+    let candidates: Array<{
+      id: string;
+      score: number;
+      metadata: {
+        nodeId: string;
+        type: string;
+        title: string;
+        summary: string;
+        importance: number;
+        createdAt: number;
+        source: string;
+      };
+    }>;
+    try {
+      const t0 = performance.now();
+      const results = this.vectorStore.query(queryVector, {
+        topK: this.config.candidateK,
+        filter,
+      });
+      vectorTimeMs += performance.now() - t0;
+      candidates = results.map((r) => ({
+        id: r.id,
+        score: r.score,
+        metadata: r.metadata,
+      }));
+    } catch {
+      degraded = "vector_timeout";
+      return this.fallbackTextSearch(queryText, filter, startTime);
+    }
+
+    if (candidates.length === 0) {
+      degraded = "vector_timeout";
+      return this.fallbackTextSearch(queryText, filter, startTime);
+    }
+
+    // ── Step 3: Graph traversal refine ──
+    const graphStart = performance.now();
+    const withGraphScores = candidates.map((candidate) => {
+      let graphScore = 0;
+
+      try {
+        // Look up the memory node in graph
+        const node = this.memoryDb.getNode(candidate.metadata.nodeId);
+        if (!node) {
+          graphScore = 0;
+        } else {
+          // 3a. Code linkage score: how many code symbols this memory links to
+          const codeLinks = this.memoryDb.getMemoryWithCodeSymbols(node.id);
+          const codeLinkageScore = Math.min(codeLinks.length / 3, 1.0); // 3+ links = full score
+
+          // 3b. Relation density: how many other memories reference this
+          const related = this.memoryDb.getRelatedMemories(node.id, {
+            depth: 1,
+            minWeight: 0.1,
+          });
+          const incomingCount = related.filter((r) => r.direction === "incoming").length;
+          const outgoingCount = related.filter((r) => r.direction === "outgoing").length;
+          const relationDensity = Math.min((incomingCount + outgoingCount) / 10, 1.0);
+
+          // 3c. Importance score (normalized)
+          const importanceScore = node.importance / 10;
+
+          // Combined graph score
+          graphScore = 0.4 * codeLinkageScore + 0.3 * relationDensity + 0.3 * importanceScore;
+        }
+      } catch {
+        // Individual node may fail — score as 0, don't fail the whole query
+        graphScore = 0;
+      }
+
+      return { ...candidate, graphScore };
+    });
+    graphTimeMs = performance.now() - graphStart;
+
+    // ── Step 4: Fusion scoring ──
+    const scored = withGraphScores.map((item) => {
+      const vectorScore = Math.max((item.score + 1) / 2, 0); // Normalize [-1,1] → [0,1]
+      const graphScore = item.graphScore;
+      const recencyScore = this.computeRecency(item.metadata.createdAt);
+
+      const finalScore =
+        this.config.alpha * vectorScore +
+        this.config.beta * graphScore +
+        this.config.gamma * recencyScore;
+
+      return { item, finalScore, vectorScore, graphScore, recencyScore };
+    });
+
+    // Sort by final score descending
+    scored.sort((a, b) => b.finalScore - a.finalScore);
+    const topResults = scored.slice(0, this.config.topK);
+
+    // ── Step 5: Build result objects ──
+    const results: MemoryQueryResult[] = [];
+    for (const sr of topResults) {
+      let relations: MemoryQueryResult["relations"] = [];
+      try {
+        const related = this.memoryDb.getRelatedMemories(sr.item.metadata.nodeId, { depth: 1 });
+        relations = related.map((r) => ({
+          type: r.relation as string,
+          direction: r.direction,
+          strength: r.weight,
+        }));
+      } catch {
+        // Relations are non-critical
+      }
+
+      results.push({
+        nodeId: sr.item.metadata.nodeId,
+        title: sr.item.metadata.title,
+        summary: sr.item.metadata.summary,
+        score: sr.finalScore,
+        vectorScore: sr.vectorScore,
+        graphScore: sr.graphScore,
+        recencyScore: sr.recencyScore,
+        relations,
+        metadata: {
+          type: sr.item.metadata.type,
+          tags: [], // Would need full node for tags
+          importance: sr.item.metadata.importance,
+          createdAt: sr.item.metadata.createdAt,
+          source: sr.item.metadata.source,
+        },
+      });
+    }
+
+    const totalTimeMs = performance.now() - startTime;
+
+    return {
+      results,
+      telemetry: {
+        totalTimeMs: Math.round(totalTimeMs),
+        vectorTimeMs: Math.round(vectorTimeMs),
+        graphTimeMs: Math.round(graphTimeMs),
+        candidatesCount: candidates.length,
+        returnedCount: results.length,
+        degraded,
+        top1Score: results.length > 0 ? results[0].score : 0,
+      },
+    };
   }
+
+  /**
+   * Fallback: text search when vector store is unavailable
+   */
+  private fallbackTextSearch(
+    queryText: string,
+    filter: VectorQueryOptions["filter"] | undefined,
+    startTime: number,
+  ): HybridQueryResponse {
+    const nodes = this.memoryDb.searchByText(queryText, this.config.topK);
+
+    // Apply importance filter if specified
+    let filtered = nodes;
+    if (filter?.importanceMin !== undefined) {
+      filtered = filtered.filter((n) => n.importance >= filter.importanceMin!);
+    }
+    if (filter?.types !== undefined) {
+      filtered = filtered.filter((n) => filter.types!.includes(n.nodeType));
+    }
+
+    const results: MemoryQueryResult[] = filtered.map((node) => ({
+      nodeId: node.id,
+      title: node.title,
+      summary: node.summary,
+      score: node.importance / 10, // Fallback scoring by importance
+      vectorScore: 0,
+      graphScore: node.importance / 10,
+      recencyScore: this.computeRecency(node.createdAt),
+      relations: [],
+      metadata: {
+        type: node.nodeType,
+        tags: node.tags,
+        importance: node.importance,
+        createdAt: node.createdAt,
+        source: node.source,
+      },
+    }));
+
+    const totalTimeMs = performance.now() - startTime;
+
+    return {
+      results,
+      telemetry: {
+        totalTimeMs: Math.round(totalTimeMs),
+        vectorTimeMs: 0,
+        graphTimeMs: 0,
+        candidatesCount: results.length,
+        returnedCount: results.length,
+        degraded: "vector_timeout",
+        top1Score: results.length > 0 ? results[0].score : 0,
+      },
+    };
+  }
+
+  // ===== Scoring Helpers =====
 
   private computeRecency(timestamp: number): number {
     const now = Date.now();
@@ -98,13 +329,18 @@ export class HybridQueryEngine {
     if (ageDays < 7) return 0.8;
     if (ageDays < 30) return 0.5;
     if (ageDays < 90) return 0.2;
-    return 0.1;
+    if (ageDays < 365) return 0.05;
+    return 0.01;
   }
 
-  private computeGraphScore(node: MemoryEntry, candidates: VectorResult[]): number {
-    // 1. 代码关联度: 命中相关代码符号数 / 总符号数
-    // 2. 因果链: 目标节点与查询主题的图距离
-    // 3. 引用热度: 入边数 / 最大入边数
-    throw new Error("Not implemented yet — Phase 1 target");
+  /** Update config at runtime */
+  setConfig(config: Partial<HybridQueryConfig>): void {
+    this.config = { ...this.config, ...config };
+  }
+
+  /** Close all underlying connections */
+  close(): void {
+    try { this.memoryDb.close(); } catch { /* ignore */ }
+    try { this.vectorStore.close(); } catch { /* ignore */ }
   }
 }
