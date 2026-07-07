@@ -11,3 +11,6 @@ build/
 *.db
 *.db-shm
 *.db-wal
+package.json
+package-lock.json
+

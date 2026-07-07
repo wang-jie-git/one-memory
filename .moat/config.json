@@ -1,0 +1,13 @@
+{
+  "project_name": "one-memory",
+  "log_path": "logs/backend.log",
+  "filter_pattern": "ERROR|Traceback|Process exited",
+  "check_on_commit": true,
+  "auto_monitor": false,
+  "typescript": {
+    "tsc_path": "npx tsc",
+    "tsconfig": "tsconfig.json",
+    "enable_semantic_checks": true,
+    "framework": "node"
+  }
+}
