@@ -26,10 +26,15 @@ moat report --format md
 - ✅ 类型声明文件（`types/`）
 - ✅ Moat 集成（`.moat/`）
 
-**当前状态**：
-- TypeScript 检查：5 通过
+**当前状态**：✅ **MOAT 全部通过**
+- TypeScript 语法检查：6 通过
 - CodeGraph 语义检查：已启用（570 节点，1561 边）
-- 详见：[MOAT_REPORT.md](./MOAT_REPORT.md)
+- 详细报告：[MOAT_REPORT.md](./MOAT_REPORT.md)
+
+**检查历史**：
+- 初始：17 个错误
+- 修复后：0 个错误 ✅
+- 修复率：100%
 
 ---
 
