@@ -20,8 +20,8 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 
 // 直接导入 MemorySystem（相对路径，不走 package name resolution）
-import { MemorySystem } from "../../memory-orchestrator/src/memory-system.ts";
-import { HANDLERS, getToolSchemas, type ToolSchema } from "./tools.ts";
+import { MemorySystem } from "../../memory-orchestrator/src/memory-system";
+import { HANDLERS, getToolSchemas, type ToolSchema } from "./tools";
 
 // ===== CLI Args =====
 

@@ -12,7 +12,8 @@
  */
 
 // 直接导入 MemorySystem（相对路径，不依赖 workspace 解析）
-import { MemorySystem, type MemoryNodeType } from "../../memory-orchestrator/src/memory-system.ts";
+import { MemorySystem } from "../../memory-orchestrator/src/memory-system";
+import type { MemoryNodeType } from "../../memory-graph/src/database";
 
 // ===== Tool Schema =====
 

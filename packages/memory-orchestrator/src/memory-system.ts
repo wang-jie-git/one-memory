@@ -14,8 +14,8 @@
 import { MemoryDatabase, type MemoryNode, type MemoryNodeType, type MemoryStatus, type MemorySource } from "../../memory-graph/src/database";
 import { ObsidianWriter } from "../../memory-graph/src/obsidian-writer";
 import { SqliteVectorStore } from "../../memory-vector/src/vector-store";
-import { LocalEmbedder, ApiEmbedder, SimpleEmbedder } from "../../memory-vector/src/embedder.ts";
-import type { Embedder } from "../../memory-vector/src/embedder.ts";
+import { LocalEmbedder, ApiEmbedder, SimpleEmbedder } from "../../memory-vector/src/embedder";
+import type { Embedder } from "../../memory-vector/src/embedder";
 import { HybridQueryEngine, type HybridQueryConfig } from "./index";
 import { MemoryLogger, type LogEntry, type LogLevel } from "./memory-logger";
 import { MemoryWatchdog, type HealthStatus, type WatchdogConfig, type EvaluationReport, type ReportCallback } from "./memory-watchdog";
