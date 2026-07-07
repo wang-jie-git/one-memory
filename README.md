@@ -6,6 +6,33 @@
 
 ---
 
+## 🛡️ 代码质量保证
+
+本项目使用 **Moat**（AI 编码护城河）进行代码质量检查：
+
+```bash
+# 安装 Moat
+pip install moat-ai
+
+# 运行检查
+moat check
+
+# 查看详细报告
+moat report --format md
+```
+
+**配置**：
+- ✅ TypeScript 严格模式（`tsconfig.json`）
+- ✅ 类型声明文件（`types/`）
+- ✅ Moat 集成（`.moat/`）
+
+**当前状态**：
+- TypeScript 检查：5 通过
+- CodeGraph 语义检查：已启用（570 节点，1561 边）
+- 详见：[MOAT_REPORT.md](./MOAT_REPORT.md)
+
+---
+
 ## 为什么需要 One Memory？
 
 市面上的 AI 记忆系统要么是**向量黑盒**（Mem0/Zep）——塞进去一堆文本，吐出来 top-K 片段，没有结构推理能力；
