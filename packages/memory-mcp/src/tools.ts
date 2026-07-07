@@ -154,7 +154,7 @@ export const HANDLERS: Record<string, ToolHandler> = {
     const results = result.results.slice(0, limit);
 
     const text = results.map((r, i) => {
-      return `[${i + 1}] ${r.title}\n    重要性: ${r.importance}/10  |  评分: ${r.score.toFixed(2)}\n    摘要: ${r.summary}\n    标签: #${r.tags.join(" #")}`;
+      return `[${i + 1}] ${r.title}\n    重要性: ${r.metadata.importance}/10  |  评分: ${r.score.toFixed(2)}\n    摘要: ${r.summary}\n    标签: #${r.metadata.tags.join(" #")}`;
     }).join("\n\n");
 
     return {

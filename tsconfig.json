@@ -30,7 +30,10 @@
     "typeRoots": ["./node_modules/@types", "./types"]
   },
   "include": [
-    "packages/**/src/**/*",
+    "packages/memory-graph/src/**/*",
+    "packages/memory-vector/src/**/*",
+    "packages/memory-orchestrator/src/**/*",
+    "packages/memory-mcp/src/**/*",
     "examples/**/*"
   ],
   "exclude": [
@@ -38,6 +41,7 @@
     "dist",
     "build",
     "**/*.test.ts",
-    "**/*.spec.ts"
+    "**/*.spec.ts",
+    "packages/memory-cli/**/*"
   ]
 }
