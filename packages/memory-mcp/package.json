@@ -1,6 +1,6 @@
 {
   "name": "@one/memory-mcp",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "One Memory MCP server — AI 工具接口",
   "type": "module",

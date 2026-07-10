@@ -1,6 +1,6 @@
 {
   "name": "@one/memory-vector",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "语义向量引擎适配层 — VectorStore 抽象、SQLite/sqlite-vec 实现、Embedding 模型接入",
   "main": "src/index.ts",

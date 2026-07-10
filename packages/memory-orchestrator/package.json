@@ -1,6 +1,6 @@
 {
   "name": "@one/memory-orchestrator",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "混合查询编排器 — 向量粗召回 + 图精排序 + 融合打分",
   "main": "src/index.ts",

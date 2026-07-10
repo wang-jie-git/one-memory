@@ -1,6 +1,6 @@
 {
   "name": "@one/memory-graph",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "CodeGraph 记忆引擎集成层 — 记忆节点类型、图遍历查询、Obsidian 同步",
   "main": "src/index.ts",
