@@ -1,0 +1,149 @@
+name: CI - Code Quality & Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '22'
+  PNPM_VERSION: '9'
+
+jobs:
+  moat-check:
+    name: 🛡️ Moat Code Quality
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install Moat
+        run: npm install -g moat-ai
+      
+      - name: Run Moat Check
+        run: |
+          cd /tmp/one-memory-official
+          moat check
+      
+      - name: Generate Moat Report
+        run: |
+          cd /tmp/one-memory-official
+          moat report --format md > MOAT_REPORT.md
+      
+      - name: Upload Moat Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: moat-report
+          path: MOAT_REPORT.md
+          retention-days: 30
+
+  typescript-check:
+    name: 📘 TypeScript Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: TypeScript type check
+        run: |
+          cd /tmp/one-memory-official/packages/memory-graph && npx tsc --noEmit
+          cd /tmp/one-memory-official/packages/memory-vector && npx tsc --noEmit
+          cd /tmp/one-memory-official/packages/memory-orchestrator && npx tsc --noEmit
+          cd /tmp/one-memory-official/packages/memory-mcp && npx tsc --noEmit
+          if [ -d "/tmp/one-memory-official/packages/memory-cli" ]; then
+            cd /tmp/one-memory-official/packages/memory-cli && npx tsc --noEmit
+          fi
+
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Run tests
+        run: |
+          cd /tmp/one-memory-official
+          pnpm -r test
+
+  build:
+    name: 🔨 Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+          cache-dependency-path: pnpm-lock.yaml
+      
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      
+      - name: Build packages
+        run: |
+          cd /tmp/one-memory-official
+          pnpm -r build
+
+  all-checks:
+    name: ✅ All Checks
+    runs-on: ubuntu-latest
+    needs: [moat-check, typescript-check, test, build]
+    
+    steps:
+      - name: All checks passed
+        run: echo "✅ All quality checks passed!"
