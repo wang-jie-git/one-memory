@@ -1,0 +1,51 @@
+{
+  "project_name": "one-memory",
+  "version": "1.0",
+  "rules": {
+    "layer_enforcement": {
+      "enabled": true,
+      "description": "\u7981\u6b62\u8de8\u5c42\u8c03\u7528\uff08\u5982 controller \u76f4\u63a5\u8c03\u7528 model\uff09",
+      "severity": "high"
+    },
+    "api_authentication": {
+      "enabled": true,
+      "description": "API \u63a5\u53e3\u5fc5\u987b\u7ecf\u8fc7\u9274\u6743\u4e2d\u95f4\u4ef6",
+      "severity": "critical",
+      "auto_detect": true
+    },
+    "race_condition": {
+      "enabled": true,
+      "description": "\u68c0\u6d4b pendingMessageRef \u7b49\u7ade\u6001\u6761\u4ef6",
+      "severity": "high",
+      "patterns": [
+        "pendingMessageRef",
+        "useEffect \u7f3a\u5c11\u4f9d\u8d56"
+      ]
+    },
+    "sql_injection": {
+      "enabled": true,
+      "description": "\u7981\u6b62\u76f4\u63a5\u62fc\u63a5 SQL \u5b57\u7b26\u4e32",
+      "severity": "critical",
+      "auto_detect": true
+    },
+    "error_handling": {
+      "enabled": true,
+      "description": "async \u51fd\u6570\u5fc5\u987b\u6709 try/except",
+      "severity": "medium",
+      "auto_detect": true
+    }
+  },
+  "auto_detect": {
+    "core_areas": true,
+    "entry_points": true,
+    "log_path": true
+  },
+  "log_path": "logs/backend.log",
+  "filter_pattern": "ERROR|Traceback|Process exited",
+  "check_on_commit": true,
+  "auto_monitor": false,
+  "python": {},
+  "typescript": {
+    "framework": "node"
+  }
+}

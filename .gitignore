@@ -44,8 +44,9 @@ temp/
 .one-memory-data/
 codegraph-data/
 
-# Moat
-.moat/
+# Moat — 配置入仓，运行时缓存排除
+.moat/memory.db
+.moat/hash_cache.json
 
 # Claude Code
 .claude/

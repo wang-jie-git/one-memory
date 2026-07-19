@@ -1,0 +1,146 @@
+[
+  {
+    "id": "refactor_1784453466277",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453466.2774122,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453498444",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453498.4441721,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453537099",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453537.099189,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453573042",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453573.04224,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453594064",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453594.06449,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453607576",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453607.576454,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453615846",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453615.8460789,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  },
+  {
+    "id": "refactor_1784453656952",
+    "type": "refactor_success",
+    "value": 0.0,
+    "weight": 0.25,
+    "timestamp": 1784453656.952696,
+    "context": {
+      "files_changed": 0,
+      "tests_passed": false,
+      "pain_score_before": 0.0,
+      "pain_score_after": 91.66666666666666,
+      "source": "moat_check",
+      "total_checks": 12,
+      "passed": 1,
+      "failed": 1
+    },
+    "is_positive": true
+  }
+]
