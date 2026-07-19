@@ -110,7 +110,7 @@ export interface MemoryGraphStats {
 
 // ===== Database Connection =====
 
-const MEMORY_SCHEMA_VERSION = 2;
+const MEMORY_SCHEMA_VERSION = 3;
 
 export class MemoryDatabase {
   private db: SqliteDB;

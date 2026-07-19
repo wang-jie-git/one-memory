@@ -76,7 +76,7 @@ export class LocalEmbedder implements Embedder {
   }
 }
 
-// ===== API-based Embedder (OpenAI-compatible) =====
+// ===== API-based Embedder (OpenAI-compatible) with circuit breaker =====
 
 export class ApiEmbedder implements Embedder {
   readonly modelName: string;
@@ -84,6 +84,13 @@ export class ApiEmbedder implements Embedder {
   private apiKey: string;
   private baseUrl: string;
   private model: string;
+
+  // Circuit breaker state
+  private consecutiveFailures = 0;
+  private circuitOpen = false;
+  private circuitOpenedAt = 0;
+  private readonly failureThreshold = 3;
+  private readonly resetTimeoutMs = 30_000;
 
   constructor(options: {
     model?: string;
@@ -98,33 +105,72 @@ export class ApiEmbedder implements Embedder {
     this.model = this.modelName;
   }
 
+  private checkCircuit(): void {
+    if (this.circuitOpen) {
+      if (Date.now() - this.circuitOpenedAt >= this.resetTimeoutMs) {
+        // Half-open: allow one request to test the waters
+        this.circuitOpen = false;
+        this.consecutiveFailures = 0;
+      } else {
+        throw new Error(
+          `Embedding API circuit breaker open (${this.consecutiveFailures} consecutive failures). ` +
+          `Retry in ${Math.ceil((this.resetTimeoutMs - (Date.now() - this.circuitOpenedAt)) / 1000)}s.`
+        );
+      }
+    }
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures >= this.failureThreshold) {
+      this.circuitOpen = true;
+      this.circuitOpenedAt = Date.now();
+    }
+  }
+
+  private recordSuccess(): void {
+    this.consecutiveFailures = 0;
+  }
+
   async embed(text: string): Promise<Float32Array> {
     const res = await this.embedBatch([text]);
     return res[0];
   }
 
   async embedBatch(texts: string[]): Promise<Float32Array[]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        input: texts,
-        model: this.model,
-      }),
-    });
+    this.checkCircuit();
 
-    if (!response.ok) {
-      throw new Error(`Embedding API error: ${response.status} ${await response.text()}`);
+    try {
+      const response = await fetch(`${this.baseUrl}/embeddings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          input: texts,
+          model: this.model,
+        }),
+      });
+
+      if (!response.ok) {
+        this.recordFailure();
+        throw new Error(`Embedding API error: ${response.status} ${await response.text()}`);
+      }
+
+      const data = (await response.json()) as {
+        data: Array<{ embedding: number[] }>;
+      };
+
+      this.recordSuccess();
+      return data.data.map((d) => new Float32Array(d.embedding));
+    } catch (err) {
+      // Only record non-circuit-breaker failures
+      if (!(err instanceof Error && err.message.includes("circuit breaker"))) {
+        this.recordFailure();
+      }
+      throw err;
     }
-
-    const data = (await response.json()) as {
-      data: Array<{ embedding: number[] }>;
-    };
-
-    return data.data.map((d) => new Float32Array(d.embedding));
   }
 }
 

@@ -1,4 +1,4 @@
--- One Memory Schema v2 — 梦境引擎支持
+-- One Memory Schema v3 — 记忆热度表（替代 JSON 文件持久化）
 -- 在 CodeGraph 的 DB 中新增平行表，不修改 nodes/edges
 
 -- =============================================================================
@@ -97,3 +97,18 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_status ON memory_nodes(status);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id, target_type);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_relation ON memory_edges(relation);
+
+-- =============================================================================
+-- Memory Heat Tracking（v3 新增 — 替代 JSON 文件持久化）
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS memory_heat (
+    node_id TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL DEFAULT 0,
+    last_hit_at INTEGER NOT NULL,
+    heat_score REAL NOT NULL DEFAULT 0.0
+        CHECK (heat_score >= 0.0 AND heat_score <= 10.0),
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_heat_score ON memory_heat(heat_score);

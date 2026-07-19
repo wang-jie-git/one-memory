@@ -329,6 +329,8 @@ export class MemorySystem {
     });
 
     // Buffer the vector + obsidian write
+    // 注意：graph 节点已创建（authoritative），但向量/Obsidian 写入是异步的。
+    // 如果 flush 时向量写入失败，会在 reject 回调中回滚 graph 节点（见 flush 方法）。
     return new Promise((resolve, reject) => {
       this.writeBuffer.push({
         node,
@@ -339,6 +341,14 @@ export class MemorySystem {
         reject: (err) => {
           this.watchdog.recordWrite(false);
           this.logger.error("write", "flush", `写入失败: ${node.title}`, err, { nodeId: node.id });
+          // 回滚：向量/Obsidian 写入失败时，删除已创建的 graph 节点，
+          // 避免出现"图中有节点但向量库中缺失"的不一致状态
+          try {
+            this.memoryDb.deleteNode(node.id);
+            this.logger.warn("write", "rollback", `已回滚 graph 节点: ${node.title}`, { nodeId: node.id });
+          } catch (rollbackErr) {
+            this.logger.error("write", "rollback", `回滚失败: ${node.title}`, rollbackErr as Error, { nodeId: node.id });
+          }
           reject(err);
         },
       });

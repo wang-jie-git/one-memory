@@ -9,7 +9,7 @@
   },
   "scripts": {},
   "dependencies": {
-    "@one/memory-orchestrator": "workspace:*"
+    "@one/memory-orchestrator": "*"
   },
   "devDependencies": {
     "typescript": "^5.4.0"

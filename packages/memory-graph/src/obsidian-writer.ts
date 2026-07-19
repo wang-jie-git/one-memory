@@ -70,7 +70,8 @@ export class ObsidianWriter {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 60);
-    return `memory-${node.id.slice(0, 8)}-${safeTitle}.md`;
+    // 使用完整 UUID 前 12 位（6 字节）作为前缀，碰撞概率远低于原 4 字节方案
+    return `memory-${node.id.slice(0, 12)}-${safeTitle}.md`;
   }
 
   /** 将 MemoryNode 写入 Obsidian */
@@ -157,7 +158,7 @@ export class ObsidianWriter {
     if (!fs.existsSync(notesDir)) return false;
 
     const files = fs.readdirSync(notesDir);
-    const prefix = nodeId.slice(0, 8);
+    const prefix = nodeId.slice(0, 12);
     const matches = files.filter((f) => f.includes(prefix));
 
     if (matches.length === 0) return false;

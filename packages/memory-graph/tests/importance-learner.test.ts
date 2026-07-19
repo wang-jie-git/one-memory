@@ -96,11 +96,14 @@ async function runTests() {
   learner.recordHit(node1.id);
   learner.updateAll();
 
-  // Create new instance (loads from same file)
+  // Create new instance (loads from SQLite memory_heat table)
   const learner2 = new ImportanceLearner(db, path.dirname(CG_DB));
   const loadedHeat = learner2.getEffectiveHeat(node1.id);
-  const heatFilePath = path.join(path.dirname(CG_DB), "memory-heat.json");
-  assert(fs.existsSync(heatFilePath), "Heat file was written");
+  // 热度数据持久化在 SQLite memory_heat 表中（替代 JSON 文件）
+  const heatRow = db.getRawDb()
+    .prepare("SELECT node_id, heat_score FROM memory_heat WHERE node_id = ?")
+    .get(node1.id) as { node_id: string; heat_score: number } | undefined;
+  assert(heatRow !== undefined, "Heat row persisted in SQLite memory_heat table");
   assert(loadedHeat >= 0, "Heat data persisted and loaded");
 
   // ── Test 7: Report ──
@@ -111,7 +114,6 @@ async function runTests() {
 
   // Cleanup
   for (const p of [CG_DB, CG_DB+"-wal", CG_DB+"-shm"]) { try { fs.unlinkSync(p); } catch {} }
-  try { fs.unlinkSync(path.join(path.dirname(CG_DB), "memory-heat.json")); } catch {}
 
   console.log(`\n🎉 All ImportanceLearner tests passed!`);
 }

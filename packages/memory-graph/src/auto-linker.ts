@@ -1,13 +1,17 @@
 /**
  * memory-graph: AutoLinker — 自动代码符号关联
  *
- * 扫描 CodeGraph 的 nodes 表，根据记忆条目的标题/摘要/标签，
+ * 扫描 CodeGraph 符号库，根据记忆条目的标题/摘要/标签，
  * 自动匹配相关的代码符号并建立 links_to_code 边。
  *
  * 匹配策略（按优先级）:
  *   1. 精确匹配: 记忆标签 → 代码符号 qualified_name
  *   2. 子串匹配: 记忆关键词 → 代码符号 name
  *   3. 文件路径匹配: 记忆标签 → 文件路径
+ *
+ * ⚠️ 跨模块边界：AutoLinker 不直接访问 CodeGraph 内部表，
+ * 通过 CodeSymbolResolver 接口解耦。如需更换符号源，
+ * 只需提供新的 resolver 实现。
  */
 
 import { MemoryDatabase } from "./database";
@@ -28,13 +32,65 @@ const DEFAULT_CONFIG: AutoLinkConfig = {
   allowedKinds: ["function", "class", "method", "variable", "interface", "type", "constant"],
 };
 
-interface CodeSymbol {
+// ===== CodeSymbolResolver — 跨模块契约接口 =====
+
+export interface CodeSymbol {
   id: string;
   name: string;
   qualifiedName: string;
   kind: string;
   filePath: string;
   docstring: string | null;
+}
+
+/** 符号查询契约 — 外部调用方需实现此接口 */
+export interface CodeSymbolResolver {
+  /** 根据关键词列表搜索代码符号 */
+  searchByKeywords(keywords: string[], allowedKinds: string[], maxResults: number): CodeSymbol[];
+}
+
+// ===== Default resolver: queries CodeGraph nodes table =====
+
+export class DefaultCodeSymbolResolver implements CodeSymbolResolver {
+  constructor(private memoryDb: MemoryDatabase) {}
+
+  searchByKeywords(keywords: string[], allowedKinds: string[], maxResults: number): CodeSymbol[] {
+    const placeholders = allowedKinds.map(() => "?").join(",");
+
+    const rows = this.memoryDb.getRawDb()
+      .prepare(`
+        SELECT DISTINCT n.id, n.name, n.qualified_name, n.kind, n.file_path, n.docstring
+        FROM nodes n
+        WHERE n.kind IN (${placeholders})
+          AND (
+            ${keywords.map(() =>
+              `(LOWER(n.name) LIKE ? OR LOWER(n.qualified_name) LIKE ? OR LOWER(n.file_path) LIKE ?)`
+            ).join(" OR ")}
+          )
+        LIMIT ?
+      `)
+      .all(
+        ...allowedKinds,
+        ...keywords.flatMap((kw) => [`%${kw}%`, `%${kw}%`, `%${kw}%`]),
+        maxResults,
+      ) as Array<{
+        id: string;
+        name: string;
+        qualified_name: string;
+        kind: string;
+        file_path: string;
+        docstring: string | null;
+      }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      qualifiedName: r.qualified_name,
+      kind: r.kind,
+      filePath: r.file_path,
+      docstring: r.docstring,
+    }));
+  }
 }
 
 interface MatchResult {
@@ -47,10 +103,16 @@ interface MatchResult {
 export class AutoLinker {
   private config: AutoLinkConfig;
   private memoryDb: MemoryDatabase;
+  private symbolResolver: CodeSymbolResolver;
 
-  constructor(memoryDb: MemoryDatabase, config?: Partial<AutoLinkConfig>) {
+  constructor(
+    memoryDb: MemoryDatabase,
+    config?: Partial<AutoLinkConfig>,
+    symbolResolver?: CodeSymbolResolver,
+  ) {
     this.memoryDb = memoryDb;
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this.symbolResolver = symbolResolver ?? new DefaultCodeSymbolResolver(memoryDb);
   }
 
   /**
@@ -130,50 +192,15 @@ export class AutoLinker {
   }
 
   /**
-   * 在 CodeGraph 的 nodes 表中搜索与关键词匹配的符号
+   * 在 CodeGraph 符号库中搜索与关键词匹配的符号
+   * 通过 CodeSymbolResolver 接口解耦，不直接访问内部表
    */
   private scanCodeSymbols(keywords: Set<string>): CodeSymbol[] {
-    const allowed = this.config.allowedKinds
-      .map(() => "?")
-      .join(",");
-
-    // Use SQL LIKE to find matching code symbols
-    const rows = this.memoryDb.getRawDb()
-      .prepare(`
-        SELECT DISTINCT n.id, n.name, n.qualified_name, n.kind, n.file_path, n.docstring
-        FROM nodes n
-        WHERE n.kind IN (${allowed})
-          AND (
-            ${Array.from(keywords).map(() =>
-              `(LOWER(n.name) LIKE ? OR LOWER(n.qualified_name) LIKE ? OR LOWER(n.file_path) LIKE ?)`
-            ).join(" OR ")}
-          )
-        LIMIT 100
-      `)
-      .all(
-        ...this.config.allowedKinds,
-        ...Array.from(keywords).flatMap((kw) => [
-          `%${kw}%`,
-          `%${kw}%`,
-          `%${kw}%`,
-        ]),
-      ) as Array<{
-        id: string;
-        name: string;
-        qualified_name: string;
-        kind: string;
-        file_path: string;
-        docstring: string | null;
-      }>;
-
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      qualifiedName: r.qualified_name,
-      kind: r.kind,
-      filePath: r.file_path,
-      docstring: r.docstring,
-    }));
+    return this.symbolResolver.searchByKeywords(
+      Array.from(keywords),
+      this.config.allowedKinds,
+      100,
+    );
   }
 
   /**

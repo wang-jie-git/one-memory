@@ -10,8 +10,8 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@one/memory-graph": "workspace:*",
-    "@one/memory-vector": "workspace:*"
+    "@one/memory-graph": "*",
+    "@one/memory-vector": "*"
   },
   "devDependencies": {
     "typescript": "^5.4.0",
