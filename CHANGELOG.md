@@ -11,9 +11,18 @@
 - GitHub Actions CI/CD 自动化
 - Moat 代码质量检查集成
 - TypeScript 严格模式配置
+- 统一测试运行器 (`run-tests.ts`)，一键运行所有测试
 
 ### Changed
 - 统一包命名规范（@one/*）
+
+### Fixed
+- **热度数据一致性**: 从独立 JSON 文件迁移到 SQLite `memory_heat` 表，与 CodeGraph 共享 DB
+- **双写事务回滚**: 向量/Obsidian 写入失败时自动回滚 graph 节点，防止数据不一致
+- **API Embedder 熔断**: 添加断路器（连续 3 次失败后快速降级 30 秒），避免无用重试
+- **Obsidian 文件名碰撞**: 前缀从 4 字节扩展至 6 字节（碰撞概率 2⁻³² → 2⁻⁴⁸）
+- **AutoLinker 模块解耦**: 抽取 `CodeSymbolResolver` 接口，不再直接查询 CodeGraph 内部表
+- **依赖管理**: 修复 workspace 依赖协议，取消根 `package.json` 的 gitignore 排除
 
 ## [0.1.0] - 2026-07-07
 
