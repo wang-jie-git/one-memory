@@ -1,6 +1,6 @@
 {
   "name": "@one/memory-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "One 记忆中枢 CLI 管理工具 — 查询、维护、诊断",
   "main": "src/index.ts",
