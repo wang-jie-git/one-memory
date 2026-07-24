@@ -1,5 +1,6 @@
--- One Memory Schema v3 — 记忆热度表（替代 JSON 文件持久化）
--- 在 CodeGraph 的 DB 中新增平行表，不修改 nodes/edges
+-- One Memory Schema v10 — 双层级隔离 + 结构沉淀 + 反模式 + FTS5 + 多租户
+-- 2026-07-24 升级：scope/tier_min 隔离 | structure_template | negative_examples | is_deprecated | FTS5
+-- 2026-07-24 v10: user_id 多租户隔离
 
 -- =============================================================================
 -- Memory Schema Versioning
@@ -30,10 +31,26 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
     source_session TEXT,
     tags TEXT NOT NULL DEFAULT '[]',
     node_type TEXT NOT NULL DEFAULT 'memory_entry'
-        CHECK (node_type IN ('memory_entry', 'decision', 'project_milestone', 'insight')),
+        CHECK (node_type IN ('memory_entry', 'decision', 'project_milestone', 'insight', 'structure_template')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    ttl_days INTEGER
+    ttl_days INTEGER,
+
+    -- v4 新增：双层级隔离
+    scope TEXT NOT NULL DEFAULT 'public'
+        CHECK (scope IN ('public', 'global')),
+    tier_min INTEGER NOT NULL DEFAULT 1
+        CHECK (tier_min >= 1 AND tier_min <= 10),
+
+    -- v5 新增：反模式存储
+    negative_examples TEXT NOT NULL DEFAULT '[]',
+
+    -- v6 新增：结构坍缩标记
+    is_deprecated INTEGER NOT NULL DEFAULT 0,
+    deprecated_at INTEGER,
+
+    -- v10 新增：多租户隔离
+    user_id TEXT NOT NULL DEFAULT 'default'
 );
 
 -- =============================================================================
@@ -85,6 +102,18 @@ CREATE TABLE IF NOT EXISTS dream_logs (
 );
 
 -- =============================================================================
+-- FTS5 全文搜索（v7 新增）
+-- =============================================================================
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_nodes_fts USING fts5(
+    title,
+    summary,
+    body,
+    content='memory_nodes',
+    content_rowid='rowid'
+);
+
+-- =============================================================================
 -- Indexes
 -- =============================================================================
 
@@ -93,6 +122,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_source ON memory_nodes(source);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_created_at ON memory_nodes(created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_importance ON memory_nodes(importance);
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_status ON memory_nodes(status);
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_scope ON memory_nodes(scope);
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_node_type ON memory_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_is_deprecated ON memory_nodes(is_deprecated);
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_user_id ON memory_nodes(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id, source_type);
 CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id, target_type);

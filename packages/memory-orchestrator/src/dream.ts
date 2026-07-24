@@ -364,6 +364,12 @@ export class DreamEngine {
         tags: [...commonTags, "dream-insight", "auto-generated"],
         nodeType: "insight",
         ttlDays: null,
+        scope: "public",
+        tierMin: 1,
+        negativeExamples: [],
+        isDeprecated: false,
+        deprecatedAt: null,
+        userId: "default",
       });
 
       // 链接所有成员到 insight
@@ -415,6 +421,20 @@ export class DreamEngine {
       // 跳过 insight（它们是整理产出的精华，不自动修剪）
       if (node.nodeType === "insight") continue;
 
+      // 结构模板特殊处理：不自动归档，但已废弃的超过 7 天可删除
+      if (this.isTemplateNode(node)) {
+        if (node.isDeprecated && node.deprecatedAt) {
+          const deprecatedAge = now - node.deprecatedAt;
+          if (deprecatedAge > 7 * 86400000) {
+            this.deleteNodeAndVector(node.id);
+            deleted.push(node.id);
+            continue;
+          }
+        }
+        // 模板不自动归档
+        continue;
+      }
+
       // ── TTL 过期 → 删除 ──
       if (node.ttlDays !== null) {
         const expiresAt = node.createdAt + node.ttlDays * 86400000;
@@ -465,10 +485,15 @@ export class DreamEngine {
   //  Helpers
   // ================================================================
 
-  /** 获取所有 active 节点 */
+  /** 获取所有 active 节点（排除已废弃的） */
   private getActiveNodes(): MemoryNode[] {
     const all = this.memoryDb.searchByText("", 99999);
-    return all.filter((n) => n.status === "active");
+    return all.filter((n) => n.status === "active" && !n.isDeprecated);
+  }
+
+  /** 判断节点是否为认知模板（st_ 或 ct_ 前缀） */
+  private isTemplateNode(node: MemoryNode): boolean {
+    return node.nodeType === "structure_template" || node.id.startsWith("st_") || node.id.startsWith("ct_");
   }
 
   /** 获取节点的向量表示 */
@@ -541,8 +566,10 @@ export class DreamEngine {
     let totalActive = 0;
 
     for (const n of activeNodes) {
-      activeByType[n.nodeType] = (activeByType[n.nodeType] ?? 0) + 1;
-      totalActive++;
+      if (n.status === "active" && !n.isDeprecated) {
+        activeByType[n.nodeType] = (activeByType[n.nodeType] ?? 0) + 1;
+        totalActive++;
+      }
     }
 
     const stats = this.memoryDb.getStats();

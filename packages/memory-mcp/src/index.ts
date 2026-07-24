@@ -5,7 +5,7 @@
  * 实现 MCP 协议 (JSON-RPC over stdio)，供 AI Agent 调用记忆系统。
  *
  * 用法:
- *   one-memory-mcp --codegraph-dir /path/to/.codegraph
+ *   one-memory-mcp --codegraph-dir /path/to/.codegraph [--embedder simple|api|local] [--embedder-api-key xxx] [--embedder-base-url url] [--embedder-model model]
  *
  * MCP 协议:
  *   initialize → tools/list → tools/call("memory_write", ...)
@@ -25,10 +25,19 @@ import { HANDLERS, getToolSchemas, type ToolSchema } from "./tools";
 
 // ===== CLI Args =====
 
-function parseArgs(): { codegraphDir: string; embedder: string } {
+function parseArgs(): {
+  codegraphDir: string;
+  embedder: string;
+  embedderApiKey?: string;
+  embedderBaseUrl?: string;
+  embedderModel?: string;
+} {
   const args = process.argv.slice(2);
   let codegraphDir = "";
   let embedder = "simple"; // 默认用轻量内置 embedder，零模型下载
+  let embedderApiKey: string | undefined;
+  let embedderBaseUrl: string | undefined;
+  let embedderModel: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--codegraph-dir" && i + 1 < args.length) {
@@ -36,6 +45,15 @@ function parseArgs(): { codegraphDir: string; embedder: string } {
     }
     if (args[i] === "--embedder" && i + 1 < args.length) {
       embedder = args[++i];
+    }
+    if (args[i] === "--embedder-api-key" && i + 1 < args.length) {
+      embedderApiKey = args[++i];
+    }
+    if (args[i] === "--embedder-base-url" && i + 1 < args.length) {
+      embedderBaseUrl = args[++i];
+    }
+    if (args[i] === "--embedder-model" && i + 1 < args.length) {
+      embedderModel = args[++i];
     }
   }
 
@@ -58,7 +76,7 @@ function parseArgs(): { codegraphDir: string; embedder: string } {
     process.exit(1);
   }
 
-  return { codegraphDir, embedder };
+  return { codegraphDir, embedder, embedderApiKey, embedderBaseUrl, embedderModel };
 }
 
 // ===== Logger =====
@@ -89,16 +107,25 @@ class McpServer {
   private tools: ToolSchema[] = [];
 
   async start(): Promise<void> {
-    const { codegraphDir, embedder } = parseArgs();
+    const { codegraphDir, embedder, embedderApiKey, embedderBaseUrl, embedderModel } = parseArgs();
 
-    log(`启动中... codegraph-dir=${codegraphDir} embedder=${embedder}`);
+    log(`启动中... codegraph-dir=${codegraphDir} embedder=${embedder}${embedderApiKey ? " api-key=***" : ""}`);
 
     // 初始化 MemorySystem
-    this.ms = await MemorySystem.init({
+    const msConfig: any = {
       codegraphDir,
-      embedder: embedder as "local",
+      embedder: embedder as "local" | "api" | "simple",
       watchdog: { autoStart: true },
-    });
+    };
+
+    // 传递 embedder 配置（仅 api 模式需要）
+    if (embedder === "api") {
+      msConfig.embedderApiKey = embedderApiKey;
+      msConfig.embedderBaseUrl = embedderBaseUrl;
+      msConfig.embedderModel = embedderModel;
+    }
+
+    this.ms = await MemorySystem.init(msConfig);
 
     this.tools = getToolSchemas();
 

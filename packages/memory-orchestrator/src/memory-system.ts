@@ -11,7 +11,7 @@
  *   shutdown()   → flush 缓冲 + 关闭所有连接
  */
 
-import { MemoryDatabase, type MemoryNode, type MemoryNodeType, type MemoryStatus, type MemorySource } from "../../memory-graph/src/database";
+import { MemoryDatabase, type MemoryNode, type MemoryNodeType, type MemoryStatus, type MemorySource, type MemoryScope } from "../../memory-graph/src/database";
 import { ObsidianWriter } from "../../memory-graph/src/obsidian-writer";
 import { SqliteVectorStore } from "../../memory-vector/src/vector-store";
 import { LocalEmbedder, ApiEmbedder, SimpleEmbedder } from "../../memory-vector/src/embedder";
@@ -232,6 +232,30 @@ export class MemorySystem {
     return this._initialized;
   }
 
+  /**
+   * checkSystemTier — 系统层级权限校验
+   *
+   * 4 层防御链的第 2 层（软校验）：
+   * - 第 1 层：工具注册表不向 Employee Agent 分发 global_* 工具名
+   * - 第 2 层：运行时校验环境变量 ONE_AGENT_TIER
+   * - 第 3 层：查询时强制过滤 scope="public"（memory_query handler）
+   * - 第 4 层：SQLite CHECK 约束限制 scope/tier_min
+   *
+   * @param requiredTier "global" 操作需要 ONE_AGENT_TIER=prime
+   * @returns true 如果通过校验
+   * @throws Error 如果权限不足
+   */
+  static checkSystemTier(requiredTier: "global" | "public" = "global"): boolean {
+    if (requiredTier === "public") return true;
+    const tier = process.env.ONE_AGENT_TIER ?? "employee";
+    if (tier !== "prime" && tier !== "orchestrator") {
+      throw new Error(
+        `[checkSystemTier] 权限不足：需要 ONE_AGENT_TIER=prime 才能执行全局操作，当前=${tier}`,
+      );
+    }
+    return true;
+  }
+
   // ===== Logger Accessors =====
 
   /** 获取最近 N 条日志 */
@@ -306,6 +330,12 @@ export class MemorySystem {
     source?: MemorySource;
     sourceSession?: string;
     ttlDays?: number | null;
+    scope?: MemoryScope;
+    tierMin?: number;
+    negativeExamples?: Array<{ scenario: string; whyFails: string; betterApproach: string }>;
+    isDeprecated?: boolean;
+    deprecatedAt?: number | null;
+    userId?: string;
   }): Promise<MemoryNode> {
     // Create node in graph (immediate — graph is authoritative)
     const node = this.memoryDb.createNode({
@@ -320,6 +350,12 @@ export class MemorySystem {
       tags: data.tags ?? [],
       nodeType: data.nodeType ?? "memory_entry",
       ttlDays: data.ttlDays ?? null,
+      scope: data.scope ?? "public",
+      tierMin: data.tierMin ?? 1,
+      negativeExamples: data.negativeExamples ?? [],
+      isDeprecated: data.isDeprecated ?? false,
+      deprecatedAt: data.deprecatedAt ?? null,
+      userId: data.userId ?? "default",
     });
 
     this.logger.info("write", "createNode", `已创建记忆节点: ${node.title}`, {
@@ -364,6 +400,7 @@ export class MemorySystem {
     tags?: string[];
     nodeType?: MemoryNodeType;
     source?: MemorySource;
+    userId?: string;
   }>): Promise<MemoryNode[]> {
     this.logger.info("write", "writeBatch", `批量写入 ${entries.length} 条记忆`);
 
@@ -379,6 +416,7 @@ export class MemorySystem {
         importance: number;
         createdAt: number;
         source: string;
+        tenantId?: string;
       };
     }> = [];
 
@@ -395,6 +433,12 @@ export class MemorySystem {
         tags: data.tags ?? [],
         nodeType: data.nodeType ?? "memory_entry",
         ttlDays: null,
+        scope: "public",
+        tierMin: 1,
+        negativeExamples: [],
+        isDeprecated: false,
+        deprecatedAt: null,
+        userId: data.userId ?? "default",
       });
       nodes.push(node);
 
@@ -418,6 +462,7 @@ export class MemorySystem {
           importance: node.importance,
           createdAt: node.createdAt,
           source: node.source,
+          tenantId: node.userId === "default" ? undefined : node.userId,
         },
       });
 
@@ -479,6 +524,7 @@ export class MemorySystem {
             importance: entry.node.importance,
             createdAt: entry.node.createdAt,
             source: entry.node.source,
+            tenantId: entry.node.userId === "default" ? undefined : entry.node.userId,
           });
 
           if (this.obsidianWriter) {
@@ -498,12 +544,17 @@ export class MemorySystem {
 
   // ===== Query =====
 
-  async query(text: string, filter?: { importanceMin?: number }) {
+  async query(text: string, filter?: { importanceMin?: number; userId?: string }) {
     this.logger.info("query", "hybridSearch", `查询: "${text.slice(0, 60)}"`, filter);
     const startTime = performance.now();
 
     try {
-      const result = await this.queryEngine.query(text, filter);
+      // 将 userId 映射为向量库的 tenantId 过滤
+      const vectorFilter: { importanceMin?: number; tenantId?: string } = {};
+      if (filter?.importanceMin !== undefined) vectorFilter.importanceMin = filter.importanceMin;
+      if (filter?.userId !== undefined && filter.userId !== "default") vectorFilter.tenantId = filter.userId;
+
+      const result = await this.queryEngine.query(text, vectorFilter);
       const duration = Math.round(performance.now() - startTime);
       this.logger.info("query", "hybridSearch", `查询完成: ${result.results.length} 条结果`, {
         duration,
@@ -623,6 +674,7 @@ export class MemorySystem {
         importance: number;
         createdAt: number;
         source: string;
+        tenantId?: string;
       };
     }> = [];
 
@@ -643,6 +695,7 @@ export class MemorySystem {
             importance: node.importance,
             createdAt: node.createdAt,
             source: node.source,
+            tenantId: node.userId === "default" ? undefined : node.userId,
           },
         });
       } catch (err) {

@@ -178,7 +178,7 @@ export class ImportanceLearner {
     try {
       const rows = this.memoryDb.getRawDb()
         .prepare("SELECT node_id, hits, last_hit_at, heat_score, updated_at FROM memory_heat")
-        .all() as HeatRow[];
+        .all() as unknown as HeatRow[];
 
       for (const row of rows) {
         this.heatCache.set(row.node_id, {

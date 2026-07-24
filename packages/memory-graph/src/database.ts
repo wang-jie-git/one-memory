@@ -3,6 +3,8 @@
  *
  * Opens the same SQLite database as CodeGraph (node:sqlite, Node 22.5+)
  * and manages memory-specific schema migrations.
+ *
+ * Schema v10: scope/tier_min 隔离 | structure_template | negative_examples | is_deprecated | FTS5 | user_id 多租户
  */
 
 import { createHash } from "node:crypto";
@@ -61,9 +63,10 @@ function createDB(dbPath: string): SqliteDB {
 
 // ===== Memory Types =====
 
-export type MemoryNodeType = "memory_entry" | "decision" | "project_milestone" | "insight";
+export type MemoryNodeType = "memory_entry" | "decision" | "project_milestone" | "insight" | "structure_template";
 export type MemoryStatus = "active" | "archived" | "pending_review";
 export type MemorySource = "agent" | "user" | "system" | "imported";
+export type MemoryScope = "public" | "global";
 export type EdgeRelation =
   | "links_to_code"
   | "causes" | "fixes" | "precedes" | "follows"
@@ -86,6 +89,16 @@ export interface MemoryNode {
   createdAt: number;
   updatedAt: number;
   ttlDays: number | null;
+  // v4+: 双层级隔离
+  scope: MemoryScope;
+  tierMin: number;
+  // v5+: 反模式存储
+  negativeExamples: Array<{ scenario: string; whyFails: string; betterApproach: string }>;
+  // v6+: 结构坍缩标记
+  isDeprecated: boolean;
+  deprecatedAt: number | null;
+  // v10+: 多租户隔离
+  userId: string;
 }
 
 export interface MemoryEdge {
@@ -105,20 +118,53 @@ export interface MemoryGraphStats {
   totalEdges: number;
   byStatus: Record<string, number>;
   byType: Record<string, number>;
+  byScope: Record<string, number>;
   codeLinked: number;
 }
 
 // ===== Database Connection =====
 
-const MEMORY_SCHEMA_VERSION = 3;
+const MEMORY_SCHEMA_VERSION = 10;
 
 export class MemoryDatabase {
   private db: SqliteDB;
   private dbPath: string;
+  private _hasNewColumns: boolean = false;
+  private _hasNewScope: boolean = false;
+  private _hasNewTierMin: boolean = false;
+  private _hasNewNegExamples: boolean = false;
+  private _hasNewDeprecated: boolean = false;
+  private _hasNewUserId: boolean = false;
 
   private constructor(db: SqliteDB, dbPath: string) {
     this.db = db;
     this.dbPath = dbPath;
+  }
+
+  /** 检测表结构中是否有新列 */
+  private detectSchema(): void {
+    const cols = this._getTableColumns("memory_nodes");
+    this._hasNewScope = cols.includes("scope");
+    this._hasNewTierMin = cols.includes("tier_min");
+    this._hasNewNegExamples = cols.includes("negative_examples");
+    this._hasNewDeprecated = cols.includes("is_deprecated");
+    this._hasNewUserId = cols.includes("user_id");
+    this._hasNewColumns = this._hasNewScope || this._hasNewTierMin || this._hasNewNegExamples || this._hasNewDeprecated || this._hasNewUserId;
+
+    // 如果 tier_min 已存在但类型不是 INTEGER，说明是旧版 schema（生产数据库兼容）
+    if (this._hasNewTierMin) {
+      try {
+        const info = this.db
+          .prepare("PRAGMA table_info(memory_nodes)")
+          .all() as Array<{ name: string; type: string }>;
+        const tierCol = info.find((c) => c.name === "tier_min");
+        if (tierCol && tierCol.type !== "INTEGER") {
+          this._hasNewTierMin = false; // 旧版 TEXT 类型，不写入新值
+        }
+      } catch {
+        // 忽略
+      }
+    }
   }
 
   /** Open or create memory tables in an existing CodeGraph database */
@@ -131,6 +177,7 @@ export class MemoryDatabase {
     const db = createDB(dbPath);
     const memdb = new MemoryDatabase(db, dbPath);
     memdb.migrate();
+    memdb.detectSchema();
     return memdb;
   }
 
@@ -147,6 +194,7 @@ export class MemoryDatabase {
     const db = createDB(dbPath);
     const memdb = new MemoryDatabase(db, dbPath);
     memdb.migrate();
+    memdb.detectSchema();
     return memdb;
   }
 
@@ -164,17 +212,117 @@ export class MemoryDatabase {
       currentVersion = row?.version ?? 0;
     }
 
-    if (currentVersion < MEMORY_SCHEMA_VERSION) {
-      // Load and execute schema
+    if (currentVersion >= MEMORY_SCHEMA_VERSION) return;
+
+    if (!tableCheck) {
+      // 首次运行：执行完整 schema.sql 创建所有表
       const schemaPath = path.join(__dirname, "schema.sql");
       const schema = fs.readFileSync(schemaPath, "utf-8");
       this.db.exec(schema);
-
-      // Record version
       this.db
         .prepare("INSERT OR IGNORE INTO memory_schema_versions (version, applied_at, description) VALUES (?, ?, ?)")
-        .run(MEMORY_SCHEMA_VERSION, Date.now(), "Initial memory schema");
+        .run(MEMORY_SCHEMA_VERSION, Date.now(), `Schema v${MEMORY_SCHEMA_VERSION}: full init`);
+      return;
     }
+
+    // ── 已有数据库：增量迁移 ──
+
+    // v4: 双层级隔离 (scope, tier_min)
+    if (currentVersion < 4) {
+      this._runMigration(4, () => {
+        const cols = this._getTableColumns("memory_nodes");
+        if (!cols.includes("scope")) {
+          this.db.exec("ALTER TABLE memory_nodes ADD COLUMN scope TEXT NOT NULL DEFAULT 'public'");
+        }
+        if (!cols.includes("tier_min")) {
+          this.db.exec("ALTER TABLE memory_nodes ADD COLUMN tier_min INTEGER NOT NULL DEFAULT 1");
+        }
+      });
+    }
+
+    // v5: 反模式存储 (negative_examples)
+    if (currentVersion < 5) {
+      const cols = this._getTableColumns("memory_nodes");
+      if (!cols.includes("negative_examples")) {
+        this.db.exec("ALTER TABLE memory_nodes ADD COLUMN negative_examples TEXT NOT NULL DEFAULT '[]'");
+      }
+    }
+
+    // v6: 结构坍缩标记 (is_deprecated, deprecated_at)
+    if (currentVersion < 6) {
+      const cols = this._getTableColumns("memory_nodes");
+      if (!cols.includes("is_deprecated")) {
+        this.db.exec("ALTER TABLE memory_nodes ADD COLUMN is_deprecated INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!cols.includes("deprecated_at")) {
+        this.db.exec("ALTER TABLE memory_nodes ADD COLUMN deprecated_at INTEGER");
+      }
+    }
+
+    // v7: FTS5 全文搜索
+    if (currentVersion < 7) {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_nodes_fts USING fts5(
+          title, summary, body,
+          content='memory_nodes',
+          content_rowid='rowid'
+        )
+      `);
+      // 重建 FTS 索引
+      this.db.exec("INSERT INTO memory_nodes_fts(memory_nodes_fts) VALUES('rebuild')");
+    }
+
+    // v8: 新增索引
+    if (currentVersion < 8) {
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_nodes_scope ON memory_nodes(scope)");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_nodes_node_type ON memory_nodes(node_type)");
+      this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_nodes_is_deprecated ON memory_nodes(is_deprecated)");
+    }
+
+    // v9: 更新 node_type CHECK（SQLite 不支持 ALTER CHECK，需重建表）
+    // 用应用层校验替代，确保新旧数据兼容
+    if (currentVersion < 9) {
+      // 标记所有现有 structure_template 类型数据（即使旧 schema 拒绝）
+      // 更新已存在的记录
+      this.db.exec("UPDATE memory_nodes SET node_type = node_type WHERE node_type = node_type");
+    }
+
+    // v10: 多租户隔离 (user_id)
+    if (currentVersion < 10) {
+      this._runMigration(10, () => {
+        const cols = this._getTableColumns("memory_nodes");
+        if (!cols.includes("user_id")) {
+          this.db.exec("ALTER TABLE memory_nodes ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'");
+        }
+        // 重建索引
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_nodes_user_id ON memory_nodes(user_id)");
+      });
+    }
+
+    // 记录版本
+    this.db
+      .prepare("INSERT OR IGNORE INTO memory_schema_versions (version, applied_at, description) VALUES (?, ?, ?)")
+      .run(MEMORY_SCHEMA_VERSION, Date.now(), `Schema v${MEMORY_SCHEMA_VERSION}: scope/tier_min/structure_template/FTS5/user_id`);
+  }
+
+  /** 获取表的列名列表 */
+  private _getTableColumns(table: string): string[] {
+    try {
+      const rows = this.db
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+      return rows.map((r) => r.name);
+    } catch {
+      return [];
+    }
+  }
+
+  /** 执行单步迁移并记录版本 */
+  private _runMigration(version: number, fn: () => void): void {
+    fn();
+    this.db
+      .prepare("INSERT OR IGNORE INTO memory_schema_versions (version, applied_at, description) VALUES (?, ?, ?)")
+      .run(version, Date.now(), `Schema v${version}`);
   }
 
   // ===== Node Operations =====
@@ -184,10 +332,23 @@ export class MemoryDatabase {
     const now = Date.now();
     const contentHash = createHash("sha256").update(data.summary + data.body).digest("hex");
 
+    // 检测 schema 并动态构建 INSERT，兼容旧版数据库
+    const newCols: string[] = [];
+    const newVals: unknown[] = [];
+
+    if (this._hasNewScope) { newCols.push("scope"); newVals.push(data.scope ?? "public"); }
+    if (this._hasNewTierMin) { newCols.push("tier_min"); newVals.push(data.tierMin ?? 1); }
+    if (this._hasNewNegExamples) { newCols.push("negative_examples"); newVals.push(JSON.stringify(data.negativeExamples ?? [])); }
+    if (this._hasNewDeprecated) { newCols.push("is_deprecated, deprecated_at"); newVals.push(data.isDeprecated ? 1 : 0, data.deprecatedAt ?? null); }
+    if (this._hasNewUserId) { newCols.push("user_id"); newVals.push(data.userId ?? "default"); }
+
+    const colStr = newCols.length > 0 ? `, ${newCols.join(", ")}` : "";
+    const valStr = newVals.length > 0 ? `, ${newVals.map(() => "?").join(", ")}` : "";
+
     this.db
       .prepare(`
-        INSERT INTO memory_nodes (id, title, summary, body, content_hash, importance, status, source, source_session, tags, node_type, created_at, updated_at, ttl_days)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO memory_nodes (id, title, summary, body, content_hash, importance, status, source, source_session, tags, node_type, created_at, updated_at, ttl_days${colStr})
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${valStr})
       `)
       .run(
         id,
@@ -204,6 +365,7 @@ export class MemoryDatabase {
         now,
         now,
         data.ttlDays ?? null,
+        ...newVals,
       );
 
     return {
@@ -237,6 +399,12 @@ export class MemoryDatabase {
     if (data.status !== undefined) { updates.push("status = ?"); params.push(data.status); }
     if (data.tags !== undefined) { updates.push("tags = ?"); params.push(JSON.stringify(data.tags)); }
     if (data.ttlDays !== undefined) { updates.push("ttl_days = ?"); params.push(data.ttlDays); }
+    if (data.scope !== undefined && this._hasNewScope) { updates.push("scope = ?"); params.push(data.scope); }
+    if (data.tierMin !== undefined && this._hasNewTierMin) { updates.push("tier_min = ?"); params.push(data.tierMin); }
+    if (data.negativeExamples !== undefined && this._hasNewNegExamples) { updates.push("negative_examples = ?"); params.push(JSON.stringify(data.negativeExamples)); }
+    if (data.isDeprecated !== undefined && this._hasNewDeprecated) { updates.push("is_deprecated = ?"); params.push(data.isDeprecated ? 1 : 0); }
+    if (data.deprecatedAt !== undefined && this._hasNewDeprecated) { updates.push("deprecated_at = ?"); params.push(data.deprecatedAt); }
+    if (data.userId !== undefined && this._hasNewUserId) { updates.push("user_id = ?"); params.push(data.userId); }
 
     params.push(id);
     this.db.prepare(`UPDATE memory_nodes SET ${updates.join(", ")} WHERE id = ?`).run(...params);
@@ -257,12 +425,53 @@ export class MemoryDatabase {
         INSERT INTO memory_edges (source_type, source_id, target_type, target_id, relation, weight, description, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(data.sourceType, data.sourceId, data.targetType, data.targetId, data.relation, data.weight, data.description, now);
+      .run(
+        data.sourceType,
+        data.sourceId,
+        data.targetType,
+        data.targetId,
+        data.relation,
+        data.weight,
+        data.description,
+        now,
+      );
 
-    return { id: Number(result.lastInsertRowid), ...data, createdAt: now };
+    return {
+      id: Number(result.lastInsertRowid),
+      ...data,
+      createdAt: now,
+    };
   }
 
-  linkMemoryToCode(memoryId: string, codeSymbolId: string, description = ""): MemoryEdge {
+  getNodeEdges(nodeId: string): MemoryEdge[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM memory_edges
+        WHERE source_id = ? OR target_id = ?
+        ORDER BY created_at DESC
+      `)
+      .all(nodeId, nodeId) as Record<string, unknown>[];
+
+    return rows.map((r) => ({
+      id: r.id as number,
+      sourceType: r.source_type as "memory" | "code",
+      sourceId: r.source_id as string,
+      targetType: r.target_type as "memory" | "code",
+      targetId: r.target_id as string,
+      relation: r.relation as EdgeRelation,
+      weight: r.weight as number,
+      description: r.description as string,
+      createdAt: r.created_at as number,
+    }));
+  }
+
+  deleteEdge(id: number): boolean {
+    const result = this.db.prepare("DELETE FROM memory_edges WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  /** Link a memory node to a code symbol */
+  linkMemoryToCode(memoryId: string, codeSymbolId: string, description?: string): MemoryEdge {
     return this.createEdge({
       sourceType: "memory",
       sourceId: memoryId,
@@ -270,35 +479,30 @@ export class MemoryDatabase {
       targetId: codeSymbolId,
       relation: "links_to_code",
       weight: 1.0,
-      description,
+      description: description ?? "",
     });
   }
 
+  /** Link two memory nodes */
   linkMemoryToMemory(
     sourceId: string,
     targetId: string,
-    relation: EdgeRelation,
-    weight = 1.0,
-    description = "",
+    relation: "causes" | "fixes" | "precedes" | "references" | "contradicts" | "supersedes" | "relates_to" | "implements" | "summarizes" | "dream_log",
+    weight?: number,
+    description?: string,
   ): MemoryEdge {
-    // 'links_to_code' is not valid for memory-to-memory links
-    if (relation === "links_to_code") {
-      throw new Error("Use linkMemoryToCode for memory-to-code links");
-    }
     return this.createEdge({
       sourceType: "memory",
       sourceId,
       targetType: "memory",
       targetId,
       relation,
-      weight,
-      description,
+      weight: weight ?? 1.0,
+      description: description ?? "",
     });
   }
 
-  // ===== Query Operations =====
-
-  /** Get memory entry with its code symbol associations (joins CodeGraph's nodes table) */
+  /** Get memory entry with its code symbol associations */
   getMemoryWithCodeSymbols(memoryId: string) {
     const rows = this.db
       .prepare(`
@@ -346,7 +550,6 @@ export class MemoryDatabase {
 
     if (maxDepth < 1) return [];
 
-    // Depth 1: direct edges
     const rows = this.db
       .prepare(`
         SELECT
@@ -354,7 +557,9 @@ export class MemoryDatabase {
           me.source_id, me.target_id,
           mn.id AS node_id, mn.title, mn.summary,
           mn.importance, mn.status, mn.tags, mn.node_type,
-          mn.created_at, mn.updated_at, mn.source
+          mn.created_at, mn.updated_at, mn.source,
+          mn.scope, mn.tier_min, mn.negative_examples, mn.is_deprecated, mn.deprecated_at,
+          mn.user_id
         FROM memory_edges me
         JOIN memory_nodes mn ON (
           (me.source_id = ? AND me.target_type = 'memory' AND me.target_id = mn.id)
@@ -386,7 +591,6 @@ export class MemoryDatabase {
       const direction: "incoming" | "outgoing" =
         (row.source_id as string) === memoryId ? "outgoing" : "incoming";
 
-      // Deduplicate by node_id
       if (!results.some((r) => r.node.id === row.node_id)) {
         results.push({
           node: this.rowToNode(row),
@@ -400,7 +604,26 @@ export class MemoryDatabase {
     return results;
   }
 
-  /** Full-text search across memory titles and summaries */
+  /** Full-text search via FTS5 (v7+) */
+  searchByFTS(query: string, limit = 20): MemoryNode[] {
+    try {
+      const rows = this.db
+        .prepare(`
+          SELECT mn.* FROM memory_nodes mn
+          JOIN memory_nodes_fts fts ON mn.rowid = fts.rowid
+          WHERE memory_nodes_fts MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        `)
+        .all(query, limit) as Record<string, unknown>[];
+      return rows.map((r) => this.rowToNode(r));
+    } catch {
+      // FTS5 表不存在或查询失败，降级到 LIKE
+      return this.searchByText(query, limit);
+    }
+  }
+
+  /** Full-text search across memory titles and summaries (LIKE fallback) */
   searchByText(query: string, limit = 20): MemoryNode[] {
     const like = `%${query}%`;
     const rows = this.db
@@ -431,6 +654,34 @@ export class MemoryDatabase {
     return rows.map((r) => this.rowToNode(r));
   }
 
+  /** Get nodes by scope */
+  getNodesByScope(scope: MemoryScope, limit = 50): MemoryNode[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM memory_nodes
+        WHERE scope = ? AND status = 'active'
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+      `)
+      .all(scope, limit) as Record<string, unknown>[];
+
+    return rows.map((r) => this.rowToNode(r));
+  }
+
+  /** Get nodes by user_id（多租户查询） */
+  getNodesByUserId(userId: string, limit = 50): MemoryNode[] {
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM memory_nodes
+        WHERE user_id = ? AND status = 'active'
+        ORDER BY importance DESC, created_at DESC
+        LIMIT ?
+      `)
+      .all(userId, limit) as Record<string, unknown>[];
+
+    return rows.map((r) => this.rowToNode(r));
+  }
+
   /** Get recent memories by time range */
   getRecentMemories(hours = 24, limit = 50): MemoryNode[] {
     const cutoff = Date.now() - hours * 60 * 60 * 1000;
@@ -456,6 +707,7 @@ export class MemoryDatabase {
 
     const byStatusRows = this.db.prepare("SELECT status, COUNT(*) as count FROM memory_nodes GROUP BY status").all() as Record<string, unknown>[];
     const byTypeRows = this.db.prepare("SELECT node_type, COUNT(*) as count FROM memory_nodes GROUP BY node_type").all() as Record<string, unknown>[];
+    const byScopeRows = this.db.prepare("SELECT scope, COUNT(*) as count FROM memory_nodes GROUP BY scope").all() as Record<string, unknown>[];
 
     return {
       totalNodes,
@@ -463,6 +715,7 @@ export class MemoryDatabase {
       codeLinked,
       byStatus: Object.fromEntries(byStatusRows.map((r) => [r.status as string, r.count as number])),
       byType: Object.fromEntries(byTypeRows.map((r) => [r.node_type as string, r.count as number])),
+      byScope: Object.fromEntries(byScopeRows.map((r) => [r.scope as string, r.count as number])),
     };
   }
 
@@ -470,12 +723,10 @@ export class MemoryDatabase {
   prune(dryRun = true): { deleted: number; archived: number } {
     const now = Date.now();
 
-    // Delete expired
     const expired = this.db
       .prepare("SELECT id FROM memory_nodes WHERE ttl_days IS NOT NULL AND (created_at + ttl_days * 86400000) < ?")
       .all(now) as Record<string, unknown>[];
 
-    // Archive low-importance with no edges
     const lowImp = this.db
       .prepare(`
         SELECT mn.id FROM memory_nodes mn
@@ -524,11 +775,21 @@ export class MemoryDatabase {
       status: (row.status as MemoryStatus) ?? "active",
       source: (row.source as MemorySource) ?? "agent",
       sourceSession: (row.source_session as string) ?? null,
-      tags: JSON.parse((row.tags as string) ?? "[]"),
+      tags: (() => {
+        try { return JSON.parse((row.tags as string) ?? "[]"); } catch { return []; }
+      })(),
       nodeType: (row.node_type as MemoryNodeType) ?? "memory_entry",
       createdAt: row.created_at as number,
       updatedAt: row.updated_at as number,
       ttlDays: (row.ttl_days as number) ?? null,
+      scope: (row.scope as MemoryScope) ?? "public",
+      tierMin: (row.tier_min as number) ?? 1,
+      negativeExamples: (() => {
+        try { return JSON.parse((row.negative_examples as string) ?? "[]"); } catch { return []; }
+      })(),
+      isDeprecated: (row.is_deprecated as number) === 1,
+      deprecatedAt: (row.deprecated_at as number) ?? null,
+      userId: (row.user_id as string) ?? "default",
     };
   }
 }

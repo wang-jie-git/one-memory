@@ -82,6 +82,12 @@ export class DecisionTracker {
       tags: [...(input.tags ?? []), "decision"],
       nodeType: "decision",
       ttlDays: null,
+      scope: "public",
+      tierMin: 1,
+      negativeExamples: [],
+      isDeprecated: false,
+      deprecatedAt: null,
+      userId: "default",
     });
 
     // Extract decision record
@@ -131,7 +137,7 @@ export class DecisionTracker {
   linkDecision(
     decisionId: string,
     relatedMemoryId: string,
-    relation: EdgeRelation = "implements",
+    relation: "causes" | "fixes" | "precedes" | "references" | "contradicts" | "supersedes" | "relates_to" | "implements" | "summarizes" | "dream_log" = "implements",
   ): void {
     this.memoryDb.linkMemoryToMemory(decisionId, relatedMemoryId, relation, 1.0);
   }
